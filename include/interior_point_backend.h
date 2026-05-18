@@ -49,13 +49,16 @@ namespace amigo {
 template <typename T>
 class OptVector;
 
-namespace ipm {
+namespace detail {
 
-// Two categories: bounded primals and equality constraints.
+/**
+ * @brief OptProblemInfo contains the information about the primal variables and
+ * constraints on the host or device.
+ */
 template <typename T>
-struct ProblemInfo {
-  int n_primal = 0;
-  int n_constraints = 0;
+struct OptProblemInfo {
+  int num_primal = 0;
+  int num_constraints = 0;
   const int* primal_indices = nullptr;
   const int* constraint_indices = nullptr;
   const T *lbx = nullptr, *ubx = nullptr;
@@ -65,7 +68,7 @@ struct ProblemInfo {
 // Pointers into OptVector storage. T may be const-qualified for read-only
 // access.
 template <typename T>
-struct State {
+struct OptState {
   T* xlam = nullptr;
   T* zl = nullptr;
   T* zu = nullptr;
@@ -73,14 +76,21 @@ struct State {
   T* su = nullptr;  // upper bound slack: su[i] ≈ ubx[i] - x[i], always > 0
 
   template <ExecPolicy policy, typename R>
-  static State make(std::shared_ptr<OptVector<R>> vars);
+  static OptState make(std::shared_ptr<OptVector<R>> vars) {
+    OptState<T> s{};
+    s.xlam = vars->template get_solution_array<policy>();
+    vars->template get_bound_duals<policy>(&s.zl, &s.zu);
+    vars->template get_bound_slacks<policy>(&s.sl, &s.su);
+    return s;
+  }
 };
 
 // Initialize stored bound slacks from current primal values.
 // Must be called after project_primals_into_interior.
 template <typename T>
-void initialize_slacks(const ProblemInfo<T>& p, const T* xlam, T* sl, T* su) {
-  for (int i = 0; i < p.n_primal; i++) {
+void initialize_slacks(const OptProblemInfo<T>& p, const T* xlam, T* sl,
+                       T* su) {
+  for (int i = 0; i < p.num_primal; i++) {
     T x = xlam[p.primal_indices[i]];
     sl[i] = std::isinf(p.lbx[i]) ? T(1) : (x - p.lbx[i]);
     su[i] = std::isinf(p.ubx[i]) ? T(1) : (p.ubx[i] - x);
@@ -89,30 +99,30 @@ void initialize_slacks(const ProblemInfo<T>& p, const T* xlam, T* sl, T* su) {
 
 // Utilities
 template <typename T>
-void set_primal_value(const ProblemInfo<T>& p, T val, T* xlam) {
-  for (int i = 0; i < p.n_primal; i++) {
+void set_primal_values(const OptProblemInfo<T>& p, T val, T* xlam) {
+  for (int i = 0; i < p.num_primal; i++) {
     xlam[p.primal_indices[i]] = val;
   }
 }
 
 template <typename T>
-void set_constraint_value(const ProblemInfo<T>& p, T val, T* xlam) {
-  for (int i = 0; i < p.n_constraints; i++) {
+void set_dual_values(const OptProblemInfo<T>& p, T val, T* xlam) {
+  for (int i = 0; i < p.num_constraints; i++) {
     xlam[p.constraint_indices[i]] = val;
   }
 }
 
 template <typename T>
-void copy_primals(const ProblemInfo<T>& p, const T* src, T* dst) {
-  for (int i = 0; i < p.n_primal; i++) {
+void copy_primals(const OptProblemInfo<T>& p, const T* src, T* dst) {
+  for (int i = 0; i < p.num_primal; i++) {
     int k = p.primal_indices[i];
     dst[k] = src[k];
   }
 }
 
 template <typename T>
-void copy_constraints(const ProblemInfo<T>& p, const T* src, T* dst) {
-  for (int i = 0; i < p.n_constraints; i++) {
+void copy_duals(const OptProblemInfo<T>& p, const T* src, T* dst) {
+  for (int i = 0; i < p.num_constraints; i++) {
     int k = p.constraint_indices[i];
     dst[k] = src[k];
   }
@@ -123,9 +133,9 @@ void copy_constraints(const ProblemInfo<T>& p, const T* src, T* dst) {
 //   x_U += min(constr_viol_tol, factor * max(1, |x_U|))
 // Default: bound_relax_factor = 1e-8, constr_viol_tol = 1e-4.
 template <typename T>
-void relax_bounds(ProblemInfo<T>& p, T* lbx_buf, T* ubx_buf, T factor = 1e-8,
+void relax_bounds(OptProblemInfo<T>& p, T* lbx_buf, T* ubx_buf, T factor = 1e-8,
                   T constr_viol_tol = 1e-4) {
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) {
       T delta = A2D::min2(constr_viol_tol,
                           factor * A2D::max2(T(1), std::abs(p.lbx[i])));
@@ -153,9 +163,9 @@ void relax_bounds(ProblemInfo<T>& p, T* lbx_buf, T* ubx_buf, T factor = 1e-8,
 // Defaults: kappa1 = 0.01, kappa2 = 0.01.
 // Must be called before initialize_bound_duals.
 template <typename T>
-void project_primals_into_interior(const ProblemInfo<T>& p, T* xlam,
+void project_primals_into_interior(const OptProblemInfo<T>& p, T* xlam,
                                    T kappa1 = 1e-2, T kappa2 = 1e-2) {
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T x = xlam[idx];
     T lb = p.lbx[i];
@@ -179,9 +189,9 @@ void project_primals_into_interior(const ProblemInfo<T>& p, T* xlam,
 // Initialize bound duals to 1.0 for all finite bounds (Section 3.6).
 // Must be called after project_primals_into_interior.
 template <typename T>
-void initialize_bound_duals(T mu, const ProblemInfo<T>& p, const T* xlam, T* zl,
-                            T* zu) {
-  for (int i = 0; i < p.n_primal; i++) {
+void initialize_bound_duals(T mu, const OptProblemInfo<T>& p, const T* xlam,
+                            T* zl, T* zu) {
+  for (int i = 0; i < p.num_primal; i++) {
     zl[i] = std::isinf(p.lbx[i]) ? T(0) : T(1);
     zu[i] = std::isinf(p.ubx[i]) ? T(0) : T(1);
   }
@@ -200,9 +210,9 @@ void initialize_bound_duals(T mu, const ProblemInfo<T>& p, const T* xlam, T* zl,
 // Output is negated: res = -augRhs  (convention: K * px = res gives Newton
 // step)
 template <typename T>
-void compute_residual(T mu, const ProblemInfo<T>& p, State<const T>& s,
+void compute_residual(T mu, const OptProblemInfo<T>& p, OptState<const T>& s,
                       const T* grad, T* res) {
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
 
     // Stationarity residual (Blocks 1-2: rhs_x or rhs_s)
@@ -222,7 +232,7 @@ void compute_residual(T mu, const ProblemInfo<T>& p, State<const T>& s,
   }
 
   // Constraint feasibility (Blocks 3-4: rhs_yc, rhs_yd)
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     res[idx] = -(grad[idx] - p.lbh[j]);
   }
@@ -231,13 +241,13 @@ void compute_residual(T mu, const ProblemInfo<T>& p, State<const T>& s,
 // Same as compute_residual, but also accumulates squared norms of the
 // un-condensed dual and primal infeasibility for convergence monitoring.
 template <typename T>
-void compute_residual_and_infeasibility(T mu, const ProblemInfo<T>& p,
-                                        State<const T>& s, const T* grad,
+void compute_residual_and_infeasibility(T mu, const OptProblemInfo<T>& p,
+                                        OptState<const T>& s, const T* grad,
                                         T* res, T& dual_sq, T& primal_sq) {
   dual_sq = 0.0;
   primal_sq = 0.0;
 
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
 
     // Stationarity residual (un-condensed, for monitoring)
@@ -257,7 +267,7 @@ void compute_residual_and_infeasibility(T mu, const ProblemInfo<T>& p,
     res[idx] = -aug;
   }
 
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     T rp = grad[idx] - p.lbh[j];
     primal_sq += rp * rp;
@@ -274,15 +284,16 @@ void compute_residual_and_infeasibility(T mu, const ProblemInfo<T>& p,
 // Constraint diagonal entries are zero (regularization delta_c added
 // separately).
 template <typename T>
-void compute_diagonal(const ProblemInfo<T>& p, State<const T>& s, T* diag) {
-  for (int i = 0; i < p.n_primal; i++) {
+void compute_diagonal(const OptProblemInfo<T>& p, OptState<const T>& s,
+                      T* diag) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T sigma = T(0);
     if (!std::isinf(p.lbx[i])) sigma += s.zl[i] / s.sl[i];
     if (!std::isinf(p.ubx[i])) sigma += s.zu[i] / s.su[i];
     diag[idx] = sigma;
   }
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     diag[p.constraint_indices[j]] = T(0);
   }
 }
@@ -300,9 +311,10 @@ void compute_diagonal(const ProblemInfo<T>& p, State<const T>& s, T* diag) {
 //   dzl = -(rhs_complL + zl * dx) / gap_L
 //   dzu = -(rhs_complU - zu * dx) / gap_U
 template <typename T>
-void compute_bound_dual_step(T mu, const ProblemInfo<T>& p, State<const T>& s,
-                             const T* px, T* dzl, T* dzu) {
-  for (int i = 0; i < p.n_primal; i++) {
+void compute_bound_dual_step(T mu, const OptProblemInfo<T>& p,
+                             OptState<const T>& s, const T* px, T* dzl,
+                             T* dzu) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T dx = px[idx];
     dzl[i] = dzu[i] = 0.0;
@@ -326,10 +338,10 @@ void compute_bound_dual_step(T mu, const ProblemInfo<T>& p, State<const T>& s,
 //   ub - (x + alpha*dx) >= (1-tau)*(ub - x)  for each finite upper bound
 //   zl + alpha*dzl >= (1-tau)*zl, zu + alpha*dzu >= (1-tau)*zu
 template <typename T>
-void compute_max_step(T tau, const ProblemInfo<T>& p, State<const T>& s,
+void compute_max_step(T tau, const OptProblemInfo<T>& p, OptState<const T>& s,
                       const T* px, const T* dzl, const T* dzu, T& ax, int& xi,
                       T& az, int& zi) {
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T dx = px[idx];
 
@@ -373,17 +385,17 @@ void compute_max_step(T tau, const ProblemInfo<T>& p, State<const T>& s,
 //   zl_new   = zl   + alpha_z * dzl     (lower bound duals)
 //   zu_new   = zu   + alpha_z * dzu     (upper bound duals)
 template <typename T>
-void apply_step(T ax, T az, const ProblemInfo<T>& p, State<const T>& s,
+void apply_step(T ax, T az, const OptProblemInfo<T>& p, OptState<const T>& s,
                 const T* dxlam, const T* dzl, const T* dzu, T* xlam_new,
                 int n_xlam, T* zl_new, T* zu_new, T* sl_new, T* su_new) {
   for (int i = 0; i < n_xlam; i++) {
     xlam_new[i] = s.xlam[i] + ax * dxlam[i];
   }
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) zl_new[i] = s.zl[i] + az * dzl[i];
     if (!std::isinf(p.ubx[i])) zu_new[i] = s.zu[i] + az * dzu[i];
   }
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T dx = ax * dxlam[idx];
     if (!std::isinf(p.lbx[i])) sl_new[i] = s.sl[i] + dx;
@@ -394,9 +406,9 @@ void apply_step(T ax, T az, const ProblemInfo<T>& p, State<const T>& s,
 // Average complementarity mu_avg = sum(gap*z) / n_bounds, and
 // minimum complementarity product (for uniformity measure xi).
 template <typename T>
-void compute_complementarity(const ProblemInfo<T>& p, State<const T>& s,
+void compute_complementarity(const OptProblemInfo<T>& p, OptState<const T>& s,
                              T partial_sum[], T& local_min) {
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) {
       T c = s.sl[i] * s.zl[i];
       partial_sum[0] += c;
@@ -414,10 +426,10 @@ void compute_complementarity(const ProblemInfo<T>& p, State<const T>& s,
 
 // Maximum deviation of individual complementarity products from mu.
 template <typename T>
-void compute_max_comp_deviation(const ProblemInfo<T>& p, State<const T>& s,
-                                T mu, T& max_dev) {
+void compute_max_comp_deviation(const OptProblemInfo<T>& p,
+                                OptState<const T>& s, T mu, T& max_dev) {
   max_dev = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i]))
       max_dev = A2D::max2(max_dev, std::abs(s.sl[i] * s.zl[i] - mu));
     if (!std::isinf(p.ubx[i]))
@@ -427,10 +439,10 @@ void compute_max_comp_deviation(const ProblemInfo<T>& p, State<const T>& s,
 
 // Sum of squared complementarity products (for quality function evaluation).
 template <typename T>
-void compute_complementarity_sq(const ProblemInfo<T>& p, State<const T>& s,
-                                T mu, T& sq) {
+void compute_complementarity_sq(const OptProblemInfo<T>& p,
+                                OptState<const T>& s, T mu, T& sq) {
   sq = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) {
       T r = s.sl[i] * s.zl[i] - mu;
       sq += r * r;
@@ -447,11 +459,11 @@ void compute_complementarity_sq(const ProblemInfo<T>& p, State<const T>& s,
 //   primal  = max |c_j(x) - target_j|              (feasibility)
 //   comp    = max |gap_i * z_i - mu|                (complementarity)
 template <typename T>
-void compute_kkt_error(T mu, const ProblemInfo<T>& p, State<const T>& s,
+void compute_kkt_error(T mu, const OptProblemInfo<T>& p, OptState<const T>& s,
                        const T* grad, T& dual, T& primal, T& comp) {
   dual = primal = comp = 0.0;
 
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     dual = A2D::max2(dual, std::abs(grad[idx] - s.zl[i] + s.zu[i]));
     if (!std::isinf(p.lbx[i]))
@@ -459,7 +471,7 @@ void compute_kkt_error(T mu, const ProblemInfo<T>& p, State<const T>& s,
     if (!std::isinf(p.ubx[i]))
       comp = A2D::max2(comp, std::abs(s.su[i] * s.zu[i] - mu));
   }
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     primal = A2D::max2(primal, std::abs(grad[idx] - p.lbh[j]));
   }
@@ -468,9 +480,10 @@ void compute_kkt_error(T mu, const ProblemInfo<T>& p, State<const T>& s,
 // Barrier log-sum: -mu * sum_i ln(x_i - lb_i) - mu * sum_i ln(ub_i - x_i).
 // Added to the objective f(x) to form the barrier objective phi_mu(x).
 template <typename T>
-T compute_barrier_log_sum(T mu, const ProblemInfo<T>& p, State<const T>& s) {
+T compute_barrier_log_sum(T mu, const OptProblemInfo<T>& p,
+                          OptState<const T>& s) {
   T b = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) {
       T g = s.sl[i];
       if (g > 0) b -= mu * std::log(g);
@@ -488,10 +501,10 @@ T compute_barrier_log_sum(T mu, const ProblemInfo<T>& p, State<const T>& s) {
 // Used in the Armijo condition and switching condition of the filter line
 // search.
 template <typename T>
-T compute_barrier_dphi(T mu, const ProblemInfo<T>& p, State<const T>& s,
+T compute_barrier_dphi(T mu, const OptProblemInfo<T>& p, OptState<const T>& s,
                        const T* grad, const T* px) {
   T d = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T dx = px[idx];
     d += grad[idx] * dx;
@@ -505,9 +518,9 @@ T compute_barrier_dphi(T mu, const ProblemInfo<T>& p, State<const T>& s,
 // Prevents the ratio Sigma_i = z_i/gap from deviating too far from mu/gap^2,
 // which is needed for the convergence proof of primal-dual methods.
 template <typename T>
-void reset_bound_multipliers(T mu, T kappa, const ProblemInfo<T>& p,
-                             State<const T>& s, T* zl_out, T* zu_out) {
-  for (int i = 0; i < p.n_primal; i++) {
+void reset_bound_multipliers(T mu, T kappa, const OptProblemInfo<T>& p,
+                             OptState<const T>& s, T* zl_out, T* zu_out) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i])) {
       T g = s.sl[i];
       zl_out[i] =
@@ -523,10 +536,10 @@ void reset_bound_multipliers(T mu, T kappa, const ProblemInfo<T>& p,
 
 // Project bound duals to at least beta_min after the affine scaling step.
 template <typename T>
-void compute_affine_start_point(T beta_min, const ProblemInfo<T>& p,
-                                State<const T>& s, const T* dzl, const T* dzu,
-                                T* zl_out, T* zu_out) {
-  for (int i = 0; i < p.n_primal; i++) {
+void compute_affine_start_point(T beta_min, const OptProblemInfo<T>& p,
+                                OptState<const T>& s, const T* dzl,
+                                const T* dzu, T* zl_out, T* zu_out) {
+  for (int i = 0; i < p.num_primal; i++) {
     if (!std::isinf(p.lbx[i]))
       zl_out[i] = A2D::max2(s.zl[i] + dzl[i], beta_min);
     if (!std::isinf(p.ubx[i]))
@@ -536,11 +549,11 @@ void compute_affine_start_point(T beta_min, const ProblemInfo<T>& p,
 
 // Squared KKT error norms (sum-of-squares, for quality function / convergence).
 template <typename T>
-void compute_kkt_error_sq(const ProblemInfo<T>& p, State<const T>& s,
+void compute_kkt_error_sq(const OptProblemInfo<T>& p, OptState<const T>& s,
                           const T* grad, T& dual_sq, T& primal_sq, T& comp_sq) {
   dual_sq = primal_sq = comp_sq = 0.0;
 
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     T rd = grad[idx] - s.zl[i] + s.zu[i];
     dual_sq += rd * rd;
@@ -553,7 +566,7 @@ void compute_kkt_error_sq(const ProblemInfo<T>& p, State<const T>& s,
       comp_sq += c * c;
     }
   }
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     T rp = grad[idx] - p.lbh[j];
     primal_sq += rp * rp;
@@ -562,10 +575,10 @@ void compute_kkt_error_sq(const ProblemInfo<T>& p, State<const T>& s,
 
 // Constraint violation 1-norm: theta = sum_j |c_j(x)|.
 template <typename T>
-T compute_constraint_violation_1norm(const ProblemInfo<T>& p, State<const T>& s,
-                                     const T* grad) {
+T compute_constraint_violation_1norm(const OptProblemInfo<T>& p,
+                                     OptState<const T>& s, const T* grad) {
   T result = 0.0;
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     result += std::abs(grad[idx] - p.lbh[j]);
   }
@@ -576,10 +589,11 @@ T compute_constraint_violation_1norm(const ProblemInfo<T>& p, State<const T>& s,
 // elsewhere. Used by the quality function to compute the cross term r_d^T *
 // (Hessian_mod * dx).
 template <typename T>
-void compute_dual_residual_vector(const ProblemInfo<T>& p, State<const T>& s,
-                                  const T* grad, T* out, int size) {
+void compute_dual_residual_vector(const OptProblemInfo<T>& p,
+                                  OptState<const T>& s, const T* grad, T* out,
+                                  int size) {
   for (int i = 0; i < size; i++) out[i] = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     out[idx] = grad[idx] - s.zl[i] + s.zu[i];
   }
@@ -594,14 +608,15 @@ void compute_dual_residual_vector(const ProblemInfo<T>& p, State<const T>& s,
 //
 // Used in the switching condition of the filter line search (Eq. 19).
 template <typename T>
-T compute_barrier_dphi_from_kkt(const ProblemInfo<T>& p, State<const T>& s,
-                                const T* res, const T* px, const T* diag) {
+T compute_barrier_dphi_from_kkt(const OptProblemInfo<T>& p,
+                                OptState<const T>& s, const T* res, const T* px,
+                                const T* diag) {
   T dphi = 0.0;
-  for (int i = 0; i < p.n_primal; i++) {
+  for (int i = 0; i < p.num_primal; i++) {
     int idx = p.primal_indices[i];
     dphi -= res[idx] * px[idx];
   }
-  for (int j = 0; j < p.n_constraints; j++) {
+  for (int j = 0; j < p.num_constraints; j++) {
     int idx = p.constraint_indices[j];
     T lam = s.xlam[idx];
     T jdx = res[idx] - diag[idx] * px[idx];
@@ -610,7 +625,70 @@ T compute_barrier_dphi_from_kkt(const ProblemInfo<T>& p, State<const T>& s,
   return dphi;
 }
 
-}  // namespace ipm
+// Template delarations
+#ifdef AMIGO_USE_CUDA
+template <typename T>
+void set_dual_values_cuda(const OptProblemInfo<T>& info, const T value, T* d_x,
+                          cudaStream_t stream = 0);
+
+template <typename T>
+void set_primal_values_cuda(const OptProblemInfo<T>& info, const T value,
+                            T* d_x, cudaStream_t stream = 0);
+
+template <typename T>
+void copy_duals_cuda(const OptProblemInfo<T>& info, const T* d_src, T* d_dest,
+                     cudaStream_t stream = 0);
+
+template <typename T>
+void copy_primals_cuda(const OptProblemInfo<T>& info, const T* d_src, T* d_dest,
+                       cudaStream_t stream = 0);
+
+template <typename T>
+void initialize_multipliers_and_slacks_cuda(T barrier_param,
+                                            const OptProblemInfo<T>& info,
+                                            const T* d_g, OptState<T>& pt,
+                                            cudaStream_t stream = 0);
+
+template <typename T>
+void compute_residual_cuda(T barrier_param, T gamma,
+                           const OptProblemInfo<T>& info, OptState<const T>& pt,
+                           const T* g, T* r, cudaStream_t stream = 0);
+
+template <typename T>
+void compute_update_cuda(T barrier_param, T gamma,
+                         const OptProblemInfo<T>& info, OptState<const T>& pt,
+                         OptState<T>& up, cudaStream_t stream = 0);
+
+template <typename T>
+void compute_diagonal_cuda(const OptProblemInfo<T>& info, OptState<const T>& pt,
+                           T* diag, cudaStream_t stream = 0);
+
+template <typename T>
+void compute_max_step_cuda(const T tau, const OptProblemInfo<T>& info,
+                           OptState<const T>& pt, OptState<const T>& up,
+                           T& alpha_x_max, int& x_index, T& alpha_z_max,
+                           int& z_index, cudaStream_t stream = 0);
+
+template <typename T>
+void apply_step_update_cuda(const T alpha_x, const T alpha_z,
+                            const OptProblemInfo<T>& info,
+                            OptState<const T>& pt, OptState<const T>& up,
+                            OptState<T>& tmp, cudaStream_t stream = 0);
+
+template <typename T>
+void compute_affine_start_point_cuda(T beta_min, const OptProblemInfo<T>& info,
+                                     OptState<const T>& pt,
+                                     OptState<const T>& up, OptState<T>& tmp,
+                                     cudaStream_t stream = 0);
+
+template <typename T>
+void compute_complementarity_pairs_cuda(const OptProblemInfo<T>& info,
+                                        const OptState<const T>& pt,
+                                        T partial_sum[], T& local_min);
+#endif
+
+}  // namespace detail
+
 }  // namespace amigo
 
 #endif  // AMIGO_INTERIOR_POINT_BACKEND_H

@@ -311,9 +311,9 @@ opt_options = {
 
 for opt_iter in range(4):
     # Get the design variables
-    x = model.get_values_from_meta("value")
-    lower = model.get_values_from_meta("lower")
-    upper = model.get_values_from_meta("upper")
+    x = model.get_initial_point()
+    lower = model.get_lower()
+    upper = model.get_upper()
 
     # Serialize the model (requires serialize method)
     if opt_iter == 0:
@@ -321,15 +321,7 @@ for opt_iter in range(4):
             json.dump(model.serialize(), fp, indent=2)
 
     # Set up the optimizer
-    opt = am.Optimizer(
-        model,
-        x,
-        lower=lower,
-        upper=upper,
-        comm=comm,
-        distribute=distribute,
-        solver=args.solver,
-    )
+    opt = am.Optimizer(model, solver=args.solver)
 
     # Optimize
     opt_data = opt.optimize(opt_options)

@@ -33,7 +33,7 @@ class ProblemSetup:
 
     def _setup_initial_vectors(self, x, lower, upper):
         if x is None:
-            x = self.model.get_values_from_meta("value")
+            x = self.model.get_initial_point()
             self.x = x.get_vector()
         elif isinstance(x, ModelVector):
             self.x = x.get_vector()
@@ -41,14 +41,14 @@ class ProblemSetup:
             self.x = x
 
         if lower is None:
-            lower = self.model.get_values_from_meta("lower")
+            lower = self.model.get_lower()
             self.lower = lower.get_vector()
         elif isinstance(lower, ModelVector):
             self.lower = lower.get_vector()
         else:
             self.lower = lower
         if upper is None:
-            upper = self.model.get_values_from_meta("upper")
+            upper = self.model.get_upper()
             self.upper = upper.get_vector()
         elif isinstance(upper, ModelVector):
             self.upper = upper.get_vector()
@@ -56,15 +56,16 @@ class ProblemSetup:
             self.upper = upper
 
     def _fill_slack_bounds(self):
-        if hasattr(self.model, "num_slacks") and self.model.num_slacks > 0:
-            lb_arr = self.lower.get_array()
-            ub_arr = self.upper.get_array()
-            # for k in range(self.model.num_slacks)ß
-            #     idx = self.model.slack_indices[k]
-            #     lb_arr[idx] = self.model._slack_meta[k]["lower"]
-            #     ub_arr[idx] = self.model._slack_meta[k]["upper"]
-            lb_arr[self.model.slack_indices] = self.model.slack_lower
-            ub_arr[self.model.slack_indices] = self.model.slack_upper
+        pass
+        # if hasattr(self.model, "num_slacks") and self.model.num_slacks > 0:
+        #     lb_arr = self.lower.get_array()
+        #     ub_arr = self.upper.get_array()
+        #     # for k in range(self.model.num_slacks)ß
+        #     #     idx = self.model.slack_indices[k]
+        #     #     lb_arr[idx] = self.model._slack_meta[k]["lower"]
+        #     #     ub_arr[idx] = self.model._slack_meta[k]["upper"]
+        #     lb_arr[self.model.slack_indices] = self.model.slack_lower
+        #     ub_arr[self.model.slack_indices] = self.model.slack_upper
 
     def _distribute_vectors(self):
         if self.distribute:

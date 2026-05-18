@@ -436,25 +436,6 @@ PYBIND11_MODULE(amigo, mod) {
                     std::shared_ptr<amigo::Vector<int>>,
                     std::shared_ptr<amigo::Vector<int>>>());
 
-  // SlackCouplingGroup: couples slack variables to inequality constraints
-  // for the 2x2 augmented system (Wachter & Biegler 2006, eq. 13).
-  py::class_<
-      amigo::SlackCouplingGroup<double, detail::policy>,
-      amigo::ComponentGroupBase<double, detail::policy>,
-      std::shared_ptr<amigo::SlackCouplingGroup<double, detail::policy>>>(
-      mod, "SlackCouplingGroup")
-      .def(py::init(
-          [](py::array_t<int> slack_indices, py::array_t<int> ineq_indices) {
-            if (slack_indices.size() != ineq_indices.size()) {
-              throw std::invalid_argument(
-                  "slack_indices and ineq_indices must have the same length");
-            }
-            return std::make_shared<
-                amigo::SlackCouplingGroup<double, detail::policy>>(
-                static_cast<int>(slack_indices.size()), slack_indices.data(),
-                ineq_indices.data());
-          }));
-
   py::class_<amigo::NodeOwners, std::shared_ptr<amigo::NodeOwners>>(
       mod, "NodeOwners")
       .def(py::init([](py::object pyobj, py::array_t<int> ranges) {
@@ -491,18 +472,17 @@ PYBIND11_MODULE(amigo, mod) {
           [](py::object pyobj, std::shared_ptr<amigo::NodeOwners> data_owners,
              std::shared_ptr<amigo::NodeOwners> var_owners,
              std::shared_ptr<amigo::NodeOwners> output_owners,
-             std::shared_ptr<amigo::Vector<int>> is_multiplier,
+             std::shared_ptr<amigo::Vector<int>> var_types,
              const std::vector<std::shared_ptr<amigo::ComponentGroupBase<
-                 double, detail::policy>>>& components,
-             std::shared_ptr<amigo::Vector<int>> fixed_dofs) {
+                 double, detail::policy>>>& components) {
             MPI_Comm comm = MPI_COMM_SELF;
             if (!pyobj.is_none()) {
               comm = *PyMPIComm_Get(pyobj.ptr());
             }
             return std::make_shared<
                 amigo::OptimizationProblem<double, detail::policy>>(
-                comm, data_owners, var_owners, output_owners, is_multiplier,
-                components, fixed_dofs);
+                comm, data_owners, var_owners, output_owners, var_types,
+                components);
           }))
       .def("get_num_variables",
            &amigo::OptimizationProblem<double,
@@ -511,6 +491,13 @@ PYBIND11_MODULE(amigo, mod) {
            &amigo::OptimizationProblem<double,
                                        detail::policy>::partition_from_root,
            py::arg("root") = 0)
+      .def("get_initial_point",
+           &amigo::OptimizationProblem<double,
+                                       detail::policy>::get_initial_point)
+      .def("get_lower",
+           &amigo::OptimizationProblem<double, detail::policy>::get_lower)
+      .def("get_upper",
+           &amigo::OptimizationProblem<double, detail::policy>::get_upper)
       .def("create_vector",
            &amigo::OptimizationProblem<double, detail::policy>::create_vector,
            py::arg("loc") = amigo::MemoryLocation::HOST_AND_DEVICE)
@@ -522,10 +509,8 @@ PYBIND11_MODULE(amigo, mod) {
            &amigo::OptimizationProblem<double, detail::policy>::get_data_vector)
       .def("set_data_vector",
            &amigo::OptimizationProblem<double, detail::policy>::set_data_vector)
-      .def(
-          "get_multiplier_indicator",
-          &amigo::OptimizationProblem<double,
-                                      detail::policy>::get_multiplier_indicator)
+      .def("get_var_types",
+           &amigo::OptimizationProblem<double, detail::policy>::get_var_types)
       .def("get_local_to_global_node_numbers",
            &amigo::OptimizationProblem<
                double, detail::policy>::get_local_to_global_node_numbers)
@@ -708,60 +693,41 @@ PYBIND11_MODULE(amigo, mod) {
            py::overload_cast<>(&amigo::OptVector<double>::get_solution))
       .def("zero", &amigo::OptVector<double>::zero)
       .def("copy", &amigo::OptVector<double>::copy)
-      .def("get_zl",
-           [](const amigo::OptVector<double>& self) {
-             const double *zl, *zu;
-             self.get_bound_duals<detail::policy>(&zl, &zu);
-             int n = self.get_n_primal();
-             return std::vector<double>(zl, zl + n);
-           })
-      .def("get_zu",
-           [](const amigo::OptVector<double>& self) {
-             const double *zl, *zu;
-             self.get_bound_duals<detail::policy>(&zl, &zu);
-             int n = self.get_n_primal();
-             return std::vector<double>(zu, zu + n);
-           })
-      .def("get_sl",
-           [](const amigo::OptVector<double>& self) {
-             const double *sl, *su;
-             self.get_bound_slacks<detail::policy>(&sl, &su);
-             int n = self.get_n_primal();
-             return std::vector<double>(sl, sl + n);
-           })
-      .def("get_su",
-           [](const amigo::OptVector<double>& self) {
-             const double *sl, *su;
-             self.get_bound_slacks<detail::policy>(&sl, &su);
-             int n = self.get_n_primal();
-             return std::vector<double>(su, su + n);
-           })
-      .def("get_slacks",
-           [](amigo::OptVector<double>& self) { return self.get_slacks(); });
+      .def("get_zl", &amigo::OptVector<double>::get_zl)
+      .def("get_zu", &amigo::OptVector<double>::get_zu)
+      .def("get_sl", &amigo::OptVector<double>::get_sl)
+      .def("get_su", &amigo::OptVector<double>::get_su);
 
   using IPMOpt = amigo::InteriorPointOptimizer<double, detail::policy>;
   using OV = amigo::OptVector<double>;
   using Vec = amigo::Vector<double>;
   using CSR = amigo::CSRMat<double>;
 
+  py::enum_<amigo::OptVarType>(mod, "OptVarType", py::arithmetic())
+      .value("FIXED", amigo::OptVarType::FIXED)
+      .value("PRIMAL", amigo::OptVarType::PRIMAL)
+      .value("SLACK", amigo::OptVarType::SLACK)
+      .value("DUAL_INEQUALITY", amigo::OptVarType::DUAL_INEQUALITY)
+      .value("DUAL_EQUALITY", amigo::OptVarType::DUAL_EQUALITY)
+      .export_values();
+
   py::class_<IPMOpt, std::shared_ptr<IPMOpt>>(mod, "InteriorPointOptimizer")
-      .def(py::init<
-           std::shared_ptr<amigo::OptimizationProblem<double, detail::policy>>,
-           std::shared_ptr<Vec>, std::shared_ptr<Vec>>())
+      .def(py::init<std::shared_ptr<
+               amigo::OptimizationProblem<double, detail::policy>>>())
       .def(
           "create_opt_vector",
           [](const IPMOpt& self, py::object x) {
-            if (!x.is_none())
+            if (!x.is_none()) {
               return self.create_opt_vector(x.cast<std::shared_ptr<Vec>>());
+            }
             return self.create_opt_vector();
           },
           py::arg("x") = py::none())
-      .def("set_multipliers_value", &IPMOpt::set_multipliers_value)
-      .def("set_design_vars_value", &IPMOpt::set_design_vars_value)
-      .def("copy_multipliers", &IPMOpt::copy_multipliers)
-      .def("copy_design_vars", &IPMOpt::copy_design_vars)
-      .def("initialize_multipliers_and_slacks",
-           &IPMOpt::initialize_multipliers_and_slacks)
+      .def("set_dual_values", &IPMOpt::set_dual_values)
+      .def("set_primal_values", &IPMOpt::set_primal_values)
+      .def("copy_duals", &IPMOpt::copy_duals)
+      .def("copy_primals", &IPMOpt::copy_primals)
+      .def("initialize_duals_and_slacks", &IPMOpt::initialize_duals_and_slacks)
       .def("compute_residual", &IPMOpt::compute_residual)
       .def("compute_update", &IPMOpt::compute_update)
       .def("compute_diagonal", &IPMOpt::compute_diagonal)
@@ -850,46 +816,28 @@ PYBIND11_MODULE(amigo, mod) {
            &IPMOpt::compute_dual_residual_vector, py::arg("vars"),
            py::arg("grad"), py::arg("output"))
       .def("check_update", &IPMOpt::check_update)
-      .def("get_lbx",
-           [](const IPMOpt& self) {
-             const auto& v = *self.get_lbx();
-             const double* a = v.template get_array<detail::policy>();
-             return std::vector<double>(a, a + v.get_size());
-           })
-      .def("get_ubx",
-           [](const IPMOpt& self) {
-             const auto& v = *self.get_ubx();
-             const double* a = v.template get_array<detail::policy>();
-             return std::vector<double>(a, a + v.get_size());
-           })
-      .def("get_lbx_relaxed",
-           [](const IPMOpt& self) {
-             const auto& v = *self.get_lbx_relaxed();
-             const double* a = v.template get_array<detail::policy>();
-             return std::vector<double>(a, a + v.get_size());
-           })
-      .def("get_ubx_relaxed",
-           [](const IPMOpt& self) {
-             const auto& v = *self.get_ubx_relaxed();
-             const double* a = v.template get_array<detail::policy>();
-             return std::vector<double>(a, a + v.get_size());
-           })
+      .def("get_lbx", &IPMOpt::get_lbx)
+      .def("get_ubx", &IPMOpt::get_ubx)
+      .def("get_lbx_relaxed", &IPMOpt::get_lbx_relaxed)
+      .def("get_ubx_relaxed", &IPMOpt::get_ubx_relaxed)
       .def("get_num_inequalities", &IPMOpt::get_num_inequalities)
       .def("get_num_design_variables", &IPMOpt::get_num_design_variables)
       .def("relax_bounds", &IPMOpt::relax_bounds, py::arg("factor") = 1e-8,
            py::arg("constr_viol_tol") = 1e-4)
-      .def(
-          "set_slack_mapping",
-          [](IPMOpt& self, py::array_t<int> slack_indices,
-             py::array_t<int> constr_indices) {
-            if (slack_indices.size() != constr_indices.size()) {
-              throw std::invalid_argument(
-                  "slack_indices and constr_indices must have the same length");
-            }
-            self.set_slack_mapping(static_cast<int>(slack_indices.size()),
-                                   slack_indices.data(), constr_indices.data());
-          },
-          py::arg("slack_indices"), py::arg("constr_indices"))
+      // .def(
+      //     "set_slack_mapping",
+      //     [](IPMOpt& self, py::array_t<int> slack_indices,
+      //        py::array_t<int> constr_indices) {
+      //       if (slack_indices.size() != constr_indices.size()) {
+      //         throw std::invalid_argument(
+      //             "slack_indices and constr_indices must have the same
+      //             length");
+      //       }
+      //       self.set_slack_mapping(static_cast<int>(slack_indices.size()),
+      //                              slack_indices.data(),
+      //                              constr_indices.data());
+      //     },
+      //     py::arg("slack_indices"), py::arg("constr_indices"))
       .def("initialize_slacks", &IPMOpt::initialize_slacks, py::arg("grad"),
            py::arg("vars"))
       .def("has_slacks", &IPMOpt::has_slacks)

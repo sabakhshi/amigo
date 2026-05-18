@@ -11,6 +11,17 @@
 
 namespace amigo {
 
+/**
+ * @brief Optimization variable types
+ */
+enum class OptVarType : int {
+  FIXED = 0,            // Variable is treated as fixed
+  PRIMAL = 1,           // Primal variable value
+  SLACK = 2,            // Slack variable
+  DUAL_INEQUALITY = 3,  // Dual variable for an inequality
+  DUAL_EQUALITY = 4     // Dual variable for an equality
+};
+
 template <typename T, ExecPolicy policy>
 class OptimizationProblem {
  public:
@@ -21,24 +32,28 @@ class OptimizationProblem {
    * @param data_owners The owners of the data
    * @param var_owners The owners for the variables (inputs/multipliers)
    * @param output_owners The owners for the outputs
-   * @param is_multiplier Integer array indicating if this is a multiper or not
+   * @param var_types Integer array indicating types of the variables
    * @param components The component groups for the model
    */
   OptimizationProblem(
       MPI_Comm comm, std::shared_ptr<NodeOwners> data_owners,
       std::shared_ptr<NodeOwners> var_owners,
       std::shared_ptr<NodeOwners> output_owners,
-      std::shared_ptr<Vector<int>> is_multiplier_,
+      std::shared_ptr<Vector<int>> var_types_,
       const std::vector<std::shared_ptr<ComponentGroupBase<T, policy>>>&
           components,
-      std::shared_ptr<Vector<int>> fixed_dofs = nullptr)
+      std::shared_ptr<Vector<T>> x_init_ = nullptr,
+      std::shared_ptr<Vector<T>> lower_ = nullptr,
+      std::shared_ptr<Vector<T>> upper_ = nullptr)
       : comm(comm),
         data_owners(data_owners),
         var_owners(var_owners),
         output_owners(output_owners),
-        is_multiplier(is_multiplier_),
+        var_types(var_types_),
         components(components),
-        fixed_dofs(fixed_dofs),
+        x_init(x_init_),
+        lower(lower_),
+        upper(upper_),
         data_dist(data_owners),
         var_dist(var_owners),
         output_dist(output_owners) {
@@ -46,13 +61,27 @@ class OptimizationProblem {
     var_ctx = var_dist.template create_context<T>();
     output_ctx = output_dist.template create_context<T>();
 
-    data_vec = create_data_vector();
-
-    // Set the default array (no multipliers) if none is provided
-    if (!is_multiplier) {
-      is_multiplier = std::make_shared<Vector<int>>(
-          var_owners->get_local_size(), var_owners->get_ext_size());
+    // Set default array (no variable types) if none is provided. This is used
+    // to distribute the design problem across MPI processes
+    if (!var_types) {
+      var_types = std::make_shared<Vector<int>>(var_owners->get_local_size(),
+                                                var_owners->get_ext_size());
     }
+
+    // If no inital or lower/upper bounds are set, create them. These values
+    // will be set later
+    if (!x_init) {
+      x_init = create_vector();
+    }
+    if (!lower) {
+      lower = create_vector();
+    }
+    if (!upper) {
+      upper = create_vector();
+    }
+
+    // Create the data vector
+    data_vec = create_data_vector();
 
     dist_node_numbers = nullptr;
     dist_data_numbers = nullptr;
@@ -124,6 +153,27 @@ class OptimizationProblem {
   int get_num_variables() const { return var_owners->get_local_size(); }
 
   /**
+   * @brief Get the initial point
+   *
+   * @return std::shared_ptr<Vector<T>>
+   */
+  std::shared_ptr<Vector<T>> get_initial_point() { return x_init; }
+
+  /**
+   * @brief Get the lower bounds
+   *
+   * @return std::shared_ptr<Vector<T>>
+   */
+  std::shared_ptr<Vector<T>> get_lower() { return lower; }
+
+  /**
+   * @brief Get the upper bounds
+   *
+   * @return std::shared_ptr<Vector<T>>
+   */
+  std::shared_ptr<Vector<T>> get_upper() { return upper; }
+
+  /**
    * @brief Create a vector object for the input and multipliers
    *
    * @return std::shared_ptr<Vector<T>> The vector object
@@ -171,15 +221,14 @@ class OptimizationProblem {
   }
 
   /**
-   * @brief Get the multiplier indicator vector
+   * @brief Get the types of variables
    *
-   * This indicates which components of the vector are multipliers and which are
-   * inputs (variables). This should not be changed.
+   * This indicates which components of the vector are different variable types
    *
    * @return const std::shared_ptr<Vector<int>>
    */
-  const std::shared_ptr<Vector<int>> get_multiplier_indicator() const {
-    return is_multiplier;
+  const std::shared_ptr<const Vector<int>> get_var_types() const {
+    return var_types;
   }
 
   /**
@@ -385,13 +434,20 @@ class OptimizationProblem {
       delete[] partition;
     }
 
+    // Create the optimization problem without the variable type information,
+    // the initial point or the lower/upper design variable bounds
     std::shared_ptr<OptimizationProblem<T, policy>> opt =
         std::make_shared<OptimizationProblem<T, policy>>(
             comm, new_data_owners, new_var_owners, new_output_owners, nullptr,
-            new_comps);
+            new_comps, nullptr, nullptr, nullptr);
 
+    // Scatter the variable type, initial point and upper/lower bound
+    // information
     bool distribute = true;
-    scatter_vector(is_multiplier, opt, opt->is_multiplier, root, distribute);
+    scatter_vector(var_types, opt, opt->var_types, root, distribute);
+    scatter_vector(x_init, opt, opt->x_init, root, distribute);
+    scatter_vector(lower, opt, opt->lower, root, distribute);
+    scatter_vector(upper, opt, opt->upper, root, distribute);
 
     return opt;
   }
@@ -409,8 +465,8 @@ class OptimizationProblem {
    */
   template <typename T1>
   void scatter_vector(
-      const std::shared_ptr<Vector<T1>> root_vec,
-      const std::shared_ptr<OptimizationProblem<T, policy>> dist_prob,
+      std::shared_ptr<Vector<T1>> root_vec,
+      const std::shared_ptr<const OptimizationProblem<T, policy>> dist_prob,
       std::shared_ptr<Vector<T1>> dist_vec, int root = 0,
       bool distribute = true) {
     int mpi_rank, mpi_size;
@@ -476,8 +532,8 @@ class OptimizationProblem {
    */
   template <typename T1>
   void gather_vector(
-      const std::shared_ptr<OptimizationProblem<T, policy>> dist_prob,
-      const std::shared_ptr<Vector<T1>> dist_vec,
+      const std::shared_ptr<const OptimizationProblem<T, policy>> dist_prob,
+      std::shared_ptr<Vector<T1>> dist_vec,
       std::shared_ptr<Vector<T1>> root_vec, int root = 0) {
     int mpi_rank, mpi_size;
     MPI_Comm_rank(comm, &mpi_rank);
@@ -533,8 +589,8 @@ class OptimizationProblem {
    */
   template <typename T1>
   void scatter_data_vector(
-      const std::shared_ptr<Vector<T1>> root_vec,
-      const std::shared_ptr<OptimizationProblem<T, policy>> dist_prob,
+      const std::shared_ptr<const Vector<T1>> root_vec,
+      const std::shared_ptr<const OptimizationProblem<T, policy>> dist_prob,
       std::shared_ptr<Vector<T1>> dist_vec, int root = 0,
       bool distribute = true) {
     int mpi_rank, mpi_size;
@@ -663,8 +719,30 @@ class OptimizationProblem {
       delete[] cols;
 
       // Create the fixed variables object
-      if (fixed_dofs) {
-        fixed = std::make_shared<FixedVariables>(fixed_dofs, mat);
+      // TODO: Need to fix for parallel computations
+      int num_fixed = 0;
+      int* t_array = var_types->get_array();
+      for (int i = 0; var_types->get_local_size(); i++) {
+        if (t_array[i] == static_cast<int>(OptVarType::FIXED)) {
+          num_fixed++;
+        }
+      }
+
+      if (num_fixed > 0) {
+        // Initialized the fixed dof
+        MemoryLocation mem_loc = MemoryLocation::HOST_AND_DEVICE;
+        std::shared_ptr<Vector<int>> fixed_dof =
+            std::make_shared<Vector<int>>(num_fixed, 0, mem_loc);
+        int* dof_array = fixed_dof->get_array();
+        for (int i = 0, n = 0; var_types->get_local_size(); i++) {
+          if (t_array[i] == static_cast<int>(OptVarType::FIXED)) {
+            dof_array[n] = i;
+            n++;
+          }
+        }
+
+        // Set the fixed locations
+        fixed = std::make_shared<FixedVariables>(fixed_dof, mat);
 
         // If policy == CUDA, copy to the device
         if constexpr (policy == ExecPolicy::CUDA) {
@@ -1315,14 +1393,16 @@ class OptimizationProblem {
   std::shared_ptr<NodeOwners> var_owners;
   std::shared_ptr<NodeOwners> output_owners;
 
-  // Array indicating which variables are multipliers
-  std::shared_ptr<Vector<int>> is_multiplier;
+  // Array indicating the types of each variable
+  std::shared_ptr<Vector<int>> var_types;
 
   // Component groups for the optimization problem
   std::vector<std::shared_ptr<ComponentGroupBase<T, policy>>> components;
 
-  // Fixed variable indices
-  std::shared_ptr<Vector<int>> fixed_dofs;
+  // The initial design point and lower and upper bounds
+  std::shared_ptr<Vector<T>> x_init;
+  std::shared_ptr<Vector<T>> lower;
+  std::shared_ptr<Vector<T>> upper;
 
   // Variable information
   VectorDistribute<policy> data_dist;

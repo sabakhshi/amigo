@@ -197,6 +197,7 @@ class Vector {
   const T& operator[](int i) const { return array[i]; }
 
   int get_size() const { return size; }
+  int get_local_size() const { return local_size; }
 
   T* get_array() { return array; }
   const T* get_array() const { return array; }

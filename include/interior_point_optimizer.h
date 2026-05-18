@@ -16,211 +16,346 @@ namespace amigo {
  *
  * Storage:
  *   x_     = xlam vector (primals + multipliers)
- *   duals_ = [zl(n_primal) | zu(n_primal)]
+ *   duals = [zl(n_primal) | zu(n_primal)]
  */
 template <typename T>
 class OptVector {
  public:
-  OptVector(int n_primal, int n_constraints, std::shared_ptr<Vector<T>> x)
-      : np_(n_primal), nc_(n_constraints), x_(x) {
-    duals_ = std::make_shared<Vector<T>>(2 * np_, 0, x->get_memory_location());
-    slacks_ = std::make_shared<Vector<T>>(2 * np_, 0, x->get_memory_location());
+  OptVector(int num_primal, int num_constraints, std::shared_ptr<Vector<T>> x)
+      : num_primal(num_primal), num_constraints(num_constraints), x(x) {
+    // Create the slack and dual variable vectors for the upper and lower bounds
+    sl = std::make_shared<Vector<T>>(num_primal, 0, x->get_memory_location());
+    su = std::make_shared<Vector<T>>(num_primal, 0, x->get_memory_location());
+    zl = std::make_shared<Vector<T>>(num_primal, 0, x->get_memory_location());
+    zu = std::make_shared<Vector<T>>(num_primal, 0, x->get_memory_location());
   }
 
   void zero() {
-    x_->zero();
-    duals_->zero();
-    slacks_->zero();
+    x->zero();
+    sl->zero();
+    su->zero();
+    zl->zero();
+    zu->zero();
   }
 
   void copy(std::shared_ptr<OptVector<T>> src) {
-    x_->copy(*src->x_);
-    duals_->copy(*src->duals_);
-    slacks_->copy(*src->slacks_);
+    x->copy(*src->x);
+    sl->copy(*src->sl);
+    su->copy(*src->su);
+    zl->copy(*src->zl);
+    zu->copy(*src->zu);
+  }
+
+  std::shared_ptr<Vector<T>> get_zl() { return zl; }
+  std::shared_ptr<Vector<T>> get_zu() { return zu; }
+  std::shared_ptr<Vector<T>> get_sl() { return sl; }
+  std::shared_ptr<Vector<T>> get_su() { return su; }
+
+  template <ExecPolicy policy>
+  void get_bound_duals(T** zl_, T** zu_) {
+    if (zl_) {
+      *zl_ = zl->template get_array<policy>();
+    }
+    if (zu_) {
+      *zu_ = zu->template get_array<policy>();
+    }
+  }
+  template <ExecPolicy policy>
+  void get_bound_duals(const T** zl_, const T** zu_) const {
+    if (zl_) {
+      *zl_ = zl->template get_array<policy>();
+    }
+    if (zu_) {
+      *zu_ = zu->template get_array<policy>();
+    }
   }
 
   template <ExecPolicy policy>
-  void get_bound_duals(T** zl, T** zu) {
-    T* a = duals_->template get_array<policy>();
-    if (zl) *zl = a;
-    if (zu) *zu = a + np_;
+  void get_bound_slacks(T** sl_, T** su_) {
+    if (sl_) {
+      *sl_ = sl->template get_array<policy>();
+    }
+    if (su_) {
+      *su_ = su->template get_array<policy>();
+    }
   }
   template <ExecPolicy policy>
-  void get_bound_duals(const T** zl, const T** zu) const {
-    const T* a = duals_->template get_array<policy>();
-    if (zl) *zl = a;
-    if (zu) *zu = a + np_;
-  }
-
-  template <ExecPolicy policy>
-  void get_bound_slacks(T** sl, T** su) {
-    T* a = slacks_->template get_array<policy>();
-    if (sl) *sl = a;
-    if (su) *su = a + np_;
-  }
-  template <ExecPolicy policy>
-  void get_bound_slacks(const T** sl, const T** su) const {
-    const T* a = slacks_->template get_array<policy>();
-    if (sl) *sl = a;
-    if (su) *su = a + np_;
+  void get_bound_slacks(const T** sl_, const T** su_) const {
+    if (sl_) {
+      *sl_ = sl->template get_array<policy>();
+    }
+    if (su_) {
+      *su_ = su->template get_array<policy>();
+    }
   }
 
   template <ExecPolicy policy>
   T* get_solution_array() {
-    return x_->template get_array<policy>();
+    return x->template get_array<policy>();
   }
   template <ExecPolicy policy>
   const T* get_solution_array() const {
-    return x_->template get_array<policy>();
+    return x->template get_array<policy>();
   }
 
-  std::shared_ptr<Vector<T>> get_solution() { return x_; }
-  const std::shared_ptr<Vector<T>> get_solution() const { return x_; }
+  std::shared_ptr<Vector<T>> get_solution() { return x; }
+  const std::shared_ptr<Vector<T>> get_solution() const { return x; }
 
-  std::shared_ptr<Vector<T>> get_slacks() { return slacks_; }
-
-  int get_n_primal() const { return np_; }
-  int get_n_constraints() const { return nc_; }
+  int get_num_primal() const { return num_primal; }
+  int get_num_constraints() const { return num_constraints; }
 
  private:
-  int np_, nc_;
-  std::shared_ptr<Vector<T>> x_;
-  std::shared_ptr<Vector<T>> duals_;
-  std::shared_ptr<Vector<T>> slacks_;
-};
+  int num_primal, num_constraints;
 
-// State factory
-namespace ipm {
-template <typename T>
-template <ExecPolicy policy, typename R>
-State<T> State<T>::make(std::shared_ptr<OptVector<R>> v) {
-  State<T> s{};
-  s.xlam = v->template get_solution_array<policy>();
-  v->template get_bound_duals<policy>(&s.zl, &s.zu);
-  v->template get_bound_slacks<policy>(&s.sl, &s.su);
-  return s;
-}
-}  // namespace ipm
+  // The primal/dual vector
+  std::shared_ptr<Vector<T>> x;
+
+  // Duals and primals associated with the lower/upper bounds
+  std::shared_ptr<Vector<T>> sl, su;
+  std::shared_ptr<Vector<T>> zl, zu;
+};
 
 /**
  * Interior-point optimizer for the 2x2 augmented system.
  *
  * Every variable is either a bounded primal or an equality constraint.
- * Wraps ipm:: backend functions for the Python/pybind interface.
+ * Wraps detail:: backend functions for the Python/pybind interface.
  */
 template <typename T, ExecPolicy policy>
 class InteriorPointOptimizer {
  public:
   InteriorPointOptimizer(
-      std::shared_ptr<OptimizationProblem<T, policy>> problem,
-      std::shared_ptr<Vector<T>> lower, std::shared_ptr<Vector<T>> upper)
-      : problem_(problem), lower_(lower), upper_(upper) {
-    comm_ = problem->get_mpi_comm();
+      std::shared_ptr<OptimizationProblem<T, policy>> problem)
+      : problem(problem) {
+    comm = problem->get_mpi_comm();
 
     int size = problem->get_num_variables();
-    const Vector<int>& mult = *problem->get_multiplier_indicator();
-    const Vector<T>& lb = *lower;
-    const Vector<T>& ub = *upper;
+    const Vector<int>& vtypes = *problem->get_var_types();
+    const Vector<T>& lb = *problem->get_lower();
+    const Vector<T>& ub = *problem->get_upper();
 
-    int np = 0, nc = 0;
-    for (int i = 0; i < size; i++) mult[i] ? nc++ : np++;
-    np_ = np;
-    nc_ = nc;
+    num_primal = 0;
+    num_constraints = 0;
 
-    auto ml = (policy == ExecPolicy::CUDA) ? MemoryLocation::HOST_AND_DEVICE
-                                           : MemoryLocation::HOST_ONLY;
-
-    pidx_ = std::make_shared<Vector<int>>(np_, 0, ml);
-    cidx_ = std::make_shared<Vector<int>>(nc_, 0, ml);
-    lbx_ = std::make_shared<Vector<T>>(np_, 0, ml);
-    ubx_ = std::make_shared<Vector<T>>(np_, 0, ml);
-    lbh_ = std::make_shared<Vector<T>>(nc_, 0, ml);
-
-    int pi = 0, ci = 0;
+    // Count up the number of primal variables and number of constraints/dual
+    // variables. Note that the number of primal and constraints will not sum
+    // up to the number of variables since variables may also be FIXED!
     for (int i = 0; i < size; i++) {
-      if (mult[i]) {
-        (*cidx_)[ci] = i;
-        (*lbh_)[ci] = lb[i];
-        ci++;
-      } else {
-        (*pidx_)[pi] = i;
-        (*lbx_)[pi] = lb[i];
-        (*ubx_)[pi] = ub[i];
-        pi++;
+      if (vtypes[i] == static_cast<int>(OptVarType::PRIMAL) ||
+          vtypes[i] == static_cast<int>(OptVarType::SLACK)) {
+        num_primal++;
+      } else if (vtypes[i] == static_cast<int>(OptVarType::DUAL_EQUALITY) ||
+                 vtypes[i] == static_cast<int>(OptVarType::DUAL_INEQUALITY)) {
+        num_constraints++;
       }
     }
 
-    pidx_->copy_host_to_device();
-    cidx_->copy_host_to_device();
-    lbx_->copy_host_to_device();
-    ubx_->copy_host_to_device();
-    lbh_->copy_host_to_device();
+    // Set the memory location depending on the execution policy
+    MemoryLocation loc = MemoryLocation::HOST_ONLY;
+    if (policy == ExecPolicy::CUDA) {
+      loc = MemoryLocation::HOST_AND_DEVICE;
+    }
 
-    info_.n_primal = np_;
-    info_.n_constraints = nc_;
-    info_.primal_indices = pidx_->template get_array<policy>();
-    info_.constraint_indices = cidx_->template get_array<policy>();
-    info_.lbx = lbx_->template get_array<policy>();
-    info_.ubx = ubx_->template get_array<policy>();
-    info_.lbh = lbh_->template get_array<policy>();
+    // Make the vectors that contain the indices of the primal values and
+    // constraints
+    primal_indices = std::make_shared<Vector<int>>(num_primal, 0, loc);
+    constraint_indices = std::make_shared<Vector<int>>(num_constraints, 0, loc);
+
+    lbx = std::make_shared<Vector<T>>(num_primal, 0, loc);
+    ubx = std::make_shared<Vector<T>>(num_primal, 0, loc);
+    lbh = std::make_shared<Vector<T>>(num_constraints, 0, loc);
+
+    for (int i = 0, primal = 0, con = 0; i < size; i++) {
+      if (vtypes[i] == static_cast<int>(OptVarType::PRIMAL) ||
+          vtypes[i] == static_cast<int>(OptVarType::SLACK)) {
+        (*constraint_indices)[con] = i;
+        (*lbh)[con] = lb[i];
+        con++;
+      } else if (vtypes[i] == static_cast<int>(OptVarType::DUAL_EQUALITY) ||
+                 vtypes[i] == static_cast<int>(OptVarType::DUAL_INEQUALITY)) {
+        (*primal_indices)[primal] = i;
+        (*lbx)[primal] = lb[i];
+        (*ubx)[primal] = ub[i];
+        primal++;
+      }
+    }
+
+    // Copy the variable information to the device
+    primal_indices->copy_host_to_device();
+    constraint_indices->copy_host_to_device();
+    lbx->copy_host_to_device();
+    ubx->copy_host_to_device();
+    lbh->copy_host_to_device();
+
+    // Set the host/device pointers into the info
+    info.num_primal = num_primal;
+    info.num_constraints = num_constraints;
+    info.primal_indices = primal_indices->template get_array<policy>();
+    info.constraint_indices = constraint_indices->template get_array<policy>();
+    info.lbx = lbx->template get_array<policy>();
+    info.ubx = ubx->template get_array<policy>();
+    info.lbh = lbh->template get_array<policy>();
   }
 
-  // Factory
-
+  /**
+   * @brief Create an instance of the optimization state vector
+   *
+   * @return std::shared_ptr<OptVector<T>>
+   */
   std::shared_ptr<OptVector<T>> create_opt_vector() const {
-    return std::make_shared<OptVector<T>>(np_, nc_, problem_->create_vector());
+    return std::make_shared<OptVector<T>>(num_primal, num_constraints,
+                                          problem->create_vector());
   }
+
+  /**
+   * @brief Create an instance of an optimization state vector with the provided
+   * design vector
+   *
+   * @return std::shared_ptr<OptVector<T>>
+   */
   std::shared_ptr<OptVector<T>> create_opt_vector(
       std::shared_ptr<Vector<T>> x) const {
-    return std::make_shared<OptVector<T>>(np_, nc_, x);
+    return std::make_shared<OptVector<T>>(num_primal, num_constraints, x);
   }
 
-  // Delegation
+  /**
+   * @brief Set the multiplier/dual varaibles to the specified value
+   *
+   * @param value Value to place into the multiplier components
+   * @param x Vector
+   */
+  void set_dual_values(T value, std::shared_ptr<Vector<T>> x) const {
+    T* x_array = x->template get_array<policy>();
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::set_dual_values(info, value, x_array);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::set_dual_values(info, value, x_array);
+    }
+#endif
+  }
 
-  void set_multipliers_value(T v, std::shared_ptr<Vector<T>> x) const {
-    ipm::set_constraint_value(info_, v, x->template get_array<policy>());
-  }
-  void set_design_vars_value(T v, std::shared_ptr<Vector<T>> x) const {
-    ipm::set_primal_value(info_, v, x->template get_array<policy>());
-  }
-  void copy_multipliers(std::shared_ptr<Vector<T>> d,
-                        std::shared_ptr<Vector<T>> s) const {
-    ipm::copy_constraints(info_, s->template get_array<policy>(),
-                          d->template get_array<policy>());
-  }
-  void copy_design_vars(std::shared_ptr<Vector<T>> d,
-                        std::shared_ptr<Vector<T>> s) const {
-    ipm::copy_primals(info_, s->template get_array<policy>(),
-                      d->template get_array<policy>());
+  /**
+   * @brief Set the design variables to the specified value
+   *
+   * @param value Value to place into the design variable components
+   * @param x Vector
+   */
+  void set_primal_values(T value, std::shared_ptr<Vector<T>> x) const {
+    T* x_array = x->template get_array<policy>();
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::set_primal_values(info, value, x_array);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::set_primal_values_cuda(info, value, x_array);
+    }
+#endif
   }
 
-  void initialize_multipliers_and_slacks(
-      T mu, const std::shared_ptr<Vector<T>>,
-      std::shared_ptr<OptVector<T>> vars) const {
+  /**
+   * @brief Copy only the duals/multipliers from the src to the dest vector
+   *
+   * @param dest Destination vector
+   * @param src Source vector
+   */
+  void copy_duals(std::shared_ptr<Vector<T>> dest,
+                  std::shared_ptr<Vector<T>> src) const {
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::copy_duals(info, src->template get_array<policy>(),
+                         dest->template get_array<policy>());
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::copy_duals_cuda(info, src->template get_array<policy>(),
+                              dest->template get_array<policy>());
+    }
+#endif
+  }
+
+  /**
+   * @brief Copy only the design variables from the src to the dest vector
+   *
+   * @param dest Destination vector
+   * @param src Source vector
+   */
+  void copy_primals(std::shared_ptr<Vector<T>> dest,
+                    std::shared_ptr<Vector<T>> src) const {
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::copy_primals(info, src->template get_array<policy>(),
+                           dest->template get_array<policy>());
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::copy_primals_cuda(info, src->template get_array<policy>(),
+                                dest->template get_array<policy>());
+    }
+#endif
+  }
+
+  /**
+   * @brief Initialize the dual and slack variables in the problem
+   *
+   * @param vars All of the optimization variables
+   */
+  void initialize_duals_and_slacks(T mu,
+                                   std::shared_ptr<OptVector<T>> vars) const {
     // Project all primals into strict interior of bounds (Section 3.6),
     // then initialize bound duals and slacks from the projected values.
     T* xlam = vars->template get_solution_array<policy>();
-    ipm::project_primals_into_interior(info_, xlam);
+    detail::project_primals_into_interior(info, xlam);
+
     T *zl, *zu;
     vars->template get_bound_duals<policy>(&zl, &zu);
-    ipm::initialize_bound_duals(mu, info_, xlam, zl, zu);
+    detail::initialize_bound_duals(mu, info, xlam, zl, zu);
+
     T *sl, *su;
     vars->template get_bound_slacks<policy>(&sl, &su);
-    ipm::initialize_slacks(info_, xlam, sl, su);
+    detail::initialize_slacks(info, xlam, sl, su);
   }
 
-  // Condensed augmented system RHS (8-block to 4-block).
-  // Returns L2 norm of the condensed residual.
+  /**
+   * @brief Compute the negative of the primal-dual residuals based on the value
+   * of the gradient and the optimizer state variables
+   *
+   * This function computes the condensed augmented system RHS (8-block to
+   * 4-block).
+   *
+   * @param mu The barrier parameter for the residual
+   * @param vars The optimization variables
+   * @param grad The gradient computed from the problem
+   * @param res The full KKT residual
+   * @return T Returns L2 norm of the condensed residual.
+   */
   T compute_residual(T mu, const std::shared_ptr<OptVector<T>> vars,
                      const std::shared_ptr<Vector<T>> grad,
                      std::shared_ptr<Vector<T>> res) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> pt =
+        detail::OptState<const T>::template make<policy>(vars);
+    T* g = grad->template get_array<policy>();
+    T* r = res->template get_array<policy>();
+
     res->zero();
-    ipm::compute_residual(mu, info_, s, grad->template get_array<policy>(),
-                          res->template get_array<policy>());
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_residual(mu, info, pt, g, r);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_residual_cuda(mu, info, pt, g, r);
+    }
+#endif
+
+    // Compute the local contributions to the residual norm
     T local = res->template dot<policy>(*res);
     T total;
-    MPI_Allreduce(&local, &total, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(&local, &total, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return std::sqrt(total);
   }
 
@@ -228,46 +363,71 @@ class InteriorPointOptimizer {
       T mu, const std::shared_ptr<OptVector<T>> vars,
       const std::shared_ptr<Vector<T>> grad, std::shared_ptr<Vector<T>> res,
       T& dsq, T& psq) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     res->zero();
-    ipm::compute_residual_and_infeasibility(
-        mu, info_, s, grad->template get_array<policy>(),
+    detail::compute_residual_and_infeasibility(
+        mu, info, s, grad->template get_array<policy>(),
         res->template get_array<policy>(), dsq, psq);
   }
 
+  /**
+   * @brief Compute the diagonal contribution to the KKT matrix
+   *
+   * @param vars The values of the optimization variables
+   * @param diag The vector containing the diagonal components of the matrix
+   */
   void compute_diagonal(const std::shared_ptr<OptVector<T>> vars,
-                        std::shared_ptr<Vector<T>> diag) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    ipm::compute_diagonal(info_, s, diag->template get_array<policy>());
+                        std::shared_ptr<Vector<T>> diagonal) const {
+    // Zero the diagonal
+    diagonal->zero();
+
+    detail::OptState<const T> pt =
+        detail::OptState<const T>::template make<policy>(vars);
+    T* diag = diagonal->template get_array<policy>();
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_diagonal(info, pt, diag);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_diagonal_cuda(info, pt, diag);
+    }
+#endif
   }
 
-  // Copy augmented solution into update, then back-substitute for bound duals.
+  // Copy augmented solution into update, then back-substitute for bound
+  // duals.
   void compute_update(T mu, const std::shared_ptr<OptVector<T>> vars,
                       const std::shared_ptr<Vector<T>> px,
                       std::shared_ptr<OptVector<T>> upd) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     upd->get_solution()->copy(*px);
     T *dzl, *dzu;
     upd->template get_bound_duals<policy>(&dzl, &dzu);
-    ipm::compute_bound_dual_step(mu, info_, s, px->template get_array<policy>(),
-                                 dzl, dzu);
+    detail::compute_bound_dual_step(mu, info, s,
+                                    px->template get_array<policy>(), dzl, dzu);
   }
 
   void compute_max_step(T tau, const std::shared_ptr<OptVector<T>> vars,
                         const std::shared_ptr<OptVector<T>> upd, T& ax, int& xi,
                         T& az, int& zi) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     const T *dzl, *dzu;
     upd->template get_bound_duals<policy>(&dzl, &dzu);
-    ipm::compute_max_step(tau, info_, s,
-                          upd->template get_solution_array<policy>(), dzl, dzu,
-                          ax, xi, az, zi);
+    detail::compute_max_step(tau, info, s,
+                             upd->template get_solution_array<policy>(), dzl,
+                             dzu, ax, xi, az, zi);
   }
 
   void apply_step_update(T ax, T az, const std::shared_ptr<OptVector<T>> vars,
                          const std::shared_ptr<OptVector<T>> upd,
                          std::shared_ptr<OptVector<T>> tmp) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     const T* dxlam = upd->template get_solution_array<policy>();
     const T *dzl, *dzu;
     upd->template get_bound_duals<policy>(&dzl, &dzu);
@@ -276,22 +436,23 @@ class InteriorPointOptimizer {
     tmp->template get_bound_duals<policy>(&zl_n, &zu_n);
     T *sl_n, *su_n;
     tmp->template get_bound_slacks<policy>(&sl_n, &su_n);
-    int n = info_.n_primal + info_.n_constraints;
-    ipm::apply_step(ax, az, info_, s, dxlam, dzl, dzu, xlam_n, n, zl_n, zu_n,
-                    sl_n, su_n);
+    int n = info.num_primal + info.num_constraints;
+    detail::apply_step(ax, az, info, s, dxlam, dzl, dzu, xlam_n, n, zl_n, zu_n,
+                       sl_n, su_n);
   }
 
   // Python: avg_comp, xi = optimizer.compute_complementarity(vars)
   void compute_complementarity(const std::shared_ptr<OptVector<T>> vars, T& avg,
                                T& xi) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T ps[2] = {0, 0};
     T lm = std::numeric_limits<T>::max();
-    ipm::compute_complementarity(info_, s, ps, lm);
+    detail::compute_complementarity(info, s, ps, lm);
     T gps[2];
     T gm;
-    MPI_Allreduce(ps, gps, 2, get_mpi_type<T>(), MPI_SUM, comm_);
-    MPI_Allreduce(&lm, &gm, 1, get_mpi_type<T>(), MPI_MIN, comm_);
+    MPI_Allreduce(ps, gps, 2, get_mpi_type<T>(), MPI_SUM, comm);
+    MPI_Allreduce(&lm, &gm, 1, get_mpi_type<T>(), MPI_MIN, comm);
     avg = (gps[1] > 0) ? gps[0] / gps[1] : 0.0;
     xi = (avg > 0) ? A2D::max2(T(0), A2D::min2(T(1), gm / avg)) : T(1);
   }
@@ -299,31 +460,34 @@ class InteriorPointOptimizer {
   // Python: scalar = optimizer.compute_complementarity_sq(vars)
   void compute_complementarity_sq(const std::shared_ptr<OptVector<T>> vars,
                                   T& sq) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T local = 0;
-    ipm::compute_complementarity_sq(info_, s, T(0), local);
-    MPI_Allreduce(&local, &sq, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    detail::compute_complementarity_sq(info, s, T(0), local);
+    MPI_Allreduce(&local, &sq, 1, get_mpi_type<T>(), MPI_SUM, comm);
   }
 
   // Python: dev = optimizer.compute_max_comp_deviation(vars, mu)
   void compute_max_comp_deviation(const std::shared_ptr<OptVector<T>> vars,
                                   T mu, T& md) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T local;
-    ipm::compute_max_comp_deviation(info_, s, mu, local);
-    MPI_Allreduce(&local, &md, 1, get_mpi_type<T>(), MPI_MAX, comm_);
+    detail::compute_max_comp_deviation(info, s, mu, local);
+    MPI_Allreduce(&local, &md, 1, get_mpi_type<T>(), MPI_MAX, comm);
   }
 
   // Python: d_sq, p_sq, c_sq = optimizer.compute_kkt_error(vars, grad)
   void compute_kkt_error(const std::shared_ptr<OptVector<T>> vars,
                          const std::shared_ptr<Vector<T>> grad, T& d_sq,
                          T& p_sq, T& c_sq) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T ld = 0, lp = 0, lc = 0;
-    ipm::compute_kkt_error_sq(info_, s, grad->template get_array<policy>(), ld,
-                              lp, lc);
+    detail::compute_kkt_error_sq(info, s, grad->template get_array<policy>(),
+                                 ld, lp, lc);
     T lv[3] = {ld, lp, lc}, gv[3];
-    MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_SUM, comm);
     d_sq = gv[0];
     p_sq = gv[1];
     c_sq = gv[2];
@@ -334,11 +498,12 @@ class InteriorPointOptimizer {
   T compute_constraint_violation_1norm(
       const std::shared_ptr<OptVector<T>> vars,
       const std::shared_ptr<Vector<T>> grad) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    T local = ipm::compute_constraint_violation_1norm(
-        info_, s, grad->template get_array<policy>());
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
+    T local = detail::compute_constraint_violation_1norm(
+        info, s, grad->template get_array<policy>());
     T result;
-    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
@@ -347,12 +512,13 @@ class InteriorPointOptimizer {
   void compute_kkt_error_mu(T mu, const std::shared_ptr<OptVector<T>> vars,
                             const std::shared_ptr<Vector<T>> grad, T& d_inf,
                             T& p_inf, T& c_inf) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T ld = 0, lp = 0, lc = 0;
-    ipm::compute_kkt_error(mu, info_, s, grad->template get_array<policy>(), ld,
-                           lp, lc);
+    detail::compute_kkt_error(mu, info, s, grad->template get_array<policy>(),
+                              ld, lp, lc);
     T lv[3] = {ld, lp, lc}, gv[3];
-    MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_MAX, comm_);
+    MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_MAX, comm);
     d_inf = gv[0];
     p_inf = gv[1];
     c_inf = gv[2];
@@ -366,12 +532,13 @@ class InteriorPointOptimizer {
                          const std::shared_ptr<Vector<T>> res,
                          const std::shared_ptr<Vector<T>> px,
                          const std::shared_ptr<Vector<T>> diag) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    T local = ipm::compute_barrier_dphi_from_kkt(
-        info_, s, res->template get_array<policy>(),
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
+    T local = detail::compute_barrier_dphi_from_kkt(
+        info, s, res->template get_array<policy>(),
         px->template get_array<policy>(), diag->template get_array<policy>());
     T result;
-    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
@@ -381,61 +548,66 @@ class InteriorPointOptimizer {
   T compute_barrier_dphi_direct(T mu, const std::shared_ptr<OptVector<T>> vars,
                                 const std::shared_ptr<Vector<T>> grad,
                                 const std::shared_ptr<Vector<T>> px) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    T local = ipm::compute_barrier_dphi(mu, info_, s,
-                                        grad->template get_array<policy>(),
-                                        px->template get_array<policy>());
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
+    T local = detail::compute_barrier_dphi(mu, info, s,
+                                           grad->template get_array<policy>(),
+                                           px->template get_array<policy>());
     T result;
-    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
   T compute_barrier_log_sum(T mu,
                             const std::shared_ptr<OptVector<T>> vars) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    T local = ipm::compute_barrier_log_sum(mu, info_, s);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
+    T local = detail::compute_barrier_log_sum(mu, info, s);
     T result;
-    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm_);
+    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
   // Python: optimizer.reset_bound_multipliers(mu, kappa, vars) -- in-place
   void reset_bound_multipliers(T mu, T kappa,
                                std::shared_ptr<OptVector<T>> vars) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     T *zl, *zu;
     vars->template get_bound_duals<policy>(&zl, &zu);
-    ipm::reset_bound_multipliers(mu, kappa, info_, s, zl, zu);
+    detail::reset_bound_multipliers(mu, kappa, info, s, zl, zu);
   }
 
   void compute_affine_start_point(T bm,
                                   const std::shared_ptr<OptVector<T>> vars,
                                   const std::shared_ptr<OptVector<T>> upd,
                                   std::shared_ptr<OptVector<T>> dst) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
     const T *dzl, *dzu;
     upd->template get_bound_duals<policy>(&dzl, &dzu);
     T *zl_o, *zu_o;
     dst->template get_bound_duals<policy>(&zl_o, &zu_o);
-    ipm::compute_affine_start_point(bm, info_, s, dzl, dzu, zl_o, zu_o);
+    detail::compute_affine_start_point(bm, info, s, dzl, dzu, zl_o, zu_o);
   }
 
   void compute_dual_residual_vector(const std::shared_ptr<OptVector<T>> vars,
                                     const std::shared_ptr<Vector<T>> grad,
                                     std::shared_ptr<Vector<T>> out) const {
-    ipm::State<const T> s = ipm::State<const T>::template make<policy>(vars);
-    ipm::compute_dual_residual_vector(
-        info_, s, grad->template get_array<policy>(),
+    detail::OptState<const T> s =
+        detail::OptState<const T>::template make<policy>(vars);
+    detail::compute_dual_residual_vector(
+        info, s, grad->template get_array<policy>(),
         out->template get_array<policy>(), out->get_size());
   }
 
   void get_kkt_element_counts(int& n_d, int& n_p, int& n_c) const {
-    n_d = np_;  // dual stationarity has n_primal components
-    n_p = nc_;  // primal feasibility has n_constraints components
-    n_c = 0;    // complementarity count: sum of finite bounds
-    for (int i = 0; i < np_; i++) {
-      if (!std::isinf((*lbx_)[i])) n_c++;
-      if (!std::isinf((*ubx_)[i])) n_c++;
+    n_d = num_primal;       // dual stationarity has n_primal components
+    n_p = num_constraints;  // primal feasibility has n_constraints components
+    n_c = 0;                // complementarity count: sum of finite bounds
+    for (int i = 0; i < num_primal; i++) {
+      if (!std::isinf((*lbx)[i])) n_c++;
+      if (!std::isinf((*ubx)[i])) n_c++;
     }
   }
 
@@ -448,8 +620,8 @@ class InteriorPointOptimizer {
   }
 
   // Slack mapping
-  // Register which primals are slacks and which constraints they correspond to.
-  // After this call, initialize_slacks() becomes available.
+  // Register which primals are slacks and which constraints they correspond
+  // to. After this call, initialize_slacks() becomes available.
   //   slack_global:  global variable indices of slack variables
   //   constr_global: global variable indices of the inequality constraints
   // Both arrays must have the same length (n_slacks).
@@ -506,13 +678,13 @@ class InteriorPointOptimizer {
 
     // Objective: df = min(1, max_gradient / ||grad_f||_inf)
     T obj_max = T(0);
-    for (int i = 0; i < np_; i++) {
-      T v = std::abs(g[(*pidx_)[i]]);
+    for (int i = 0; i < num_primal; i++) {
+      T v = std::abs(g[(*primal_indices)[i]]);
       if (v > obj_max) obj_max = v;
     }
     T global_obj_max;
     MPI_Allreduce(&obj_max, &global_obj_max, 1, get_mpi_type<T>(), MPI_MAX,
-                  comm_);
+                  comm);
 
     obj_scale_ =
         (global_obj_max > max_gradient) ? max_gradient / global_obj_max : T(1);
@@ -520,22 +692,22 @@ class InteriorPointOptimizer {
 
     // Constraint: dc[j] = min(1, max_gradient / ||J_row_j||_inf)
     // Assemble KKT at (x, lam=0) to read Jacobian rows.
-    auto hess = problem_->create_matrix();
-    problem_->hessian(T(1), x, hess);
+    auto hess = problem->create_matrix();
+    problem->hessian(T(1), x, hess);
     hess->copy_data_device_to_host();
 
-    int nr, nc_mat, nnz_mat;
+    int nr, num_constraintsmat, nnz_mat;
     const int *rp, *cl;
     T* dt;
-    hess->get_data(&nr, &nc_mat, &nnz_mat, &rp, &cl, &dt);
+    hess->get_data(&nr, &num_constraintsmat, &nnz_mat, &rp, &cl, &dt);
 
     auto ml = (policy == ExecPolicy::CUDA) ? MemoryLocation::HOST_AND_DEVICE
                                            : MemoryLocation::HOST_ONLY;
-    constr_scale_ = std::make_shared<Vector<T>>(nc_, 0, ml);
+    constr_scale_ = std::make_shared<Vector<T>>(num_constraints, 0, ml);
 
     // Scan each constraint row for its inf-norm
-    for (int j = 0; j < nc_; j++) {
-      int row = (*cidx_)[j];
+    for (int j = 0; j < num_constraints; j++) {
+      int row = (*constraint_indices)[j];
       T row_max = T(0);
       for (int k = rp[row]; k < rp[row + 1]; k++) {
         T v = std::abs(dt[k]);
@@ -547,16 +719,17 @@ class InteriorPointOptimizer {
     }
 
     // Scale constraint targets for consistency
-    for (int j = 0; j < nc_; j++) {
+    for (int j = 0; j < num_constraints; j++) {
       T dc = (*constr_scale_)[j];
-      if (dc != T(1)) (*lbh_)[j] *= dc;
+      if (dc != T(1)) (*lbh)[j] *= dc;
     }
-    lbh_->copy_host_to_device();
-    info_.lbh = lbh_->template get_array<policy>();
+    lbh->copy_host_to_device();
+    info.lbh = lbh->template get_array<policy>();
 
     // Per-variable scaling: 1.0 for primals, dc[j] for constraints.
     scale_vec_.resize(nr, T(1));
-    for (int j = 0; j < nc_; j++) scale_vec_[(*cidx_)[j]] = (*constr_scale_)[j];
+    for (int j = 0; j < num_constraints; j++)
+      scale_vec_[(*constraint_indices)[j]] = (*constr_scale_)[j];
 
     constr_scale_->copy_host_to_device();
     scaling_active_ = true;
@@ -566,20 +739,23 @@ class InteriorPointOptimizer {
   void apply_gradient_scaling(std::shared_ptr<Vector<T>> grad) const {
     if (!scaling_active_) return;
     T* g = grad->template get_array<policy>();
-    for (int j = 0; j < nc_; j++) g[(*cidx_)[j]] *= (*constr_scale_)[j];
+    for (int j = 0; j < num_constraints; j++)
+      g[(*constraint_indices)[j]] *= (*constr_scale_)[j];
   }
 
   /// D*H*D similarity transform on the KKT matrix (scales Jacobian blocks).
   void apply_hessian_scaling(std::shared_ptr<CSRMat<T>> hess) const {
     if (!scaling_active_) return;
-    int nr, nc_mat, nnz_mat;
+    int nr, nc, nnz_mat;
     const int *rp, *cl;
     T* dt;
-    hess->get_data(&nr, &nc_mat, &nnz_mat, &rp, &cl, &dt);
+    hess->get_data(&nr, &nc, &nnz_mat, &rp, &cl, &dt);
     const T* sv = scale_vec_.data();
     for (int i = 0; i < nr; i++) {
       T di = sv[i];
-      for (int k = rp[i]; k < rp[i + 1]; k++) dt[k] *= di * sv[cl[k]];
+      for (int k = rp[i]; k < rp[i + 1]; k++) {
+        dt[k] *= di * sv[cl[k]];
+      }
     }
   }
 
@@ -587,61 +763,67 @@ class InteriorPointOptimizer {
   void scale_multipliers(std::shared_ptr<Vector<T>> x) const {
     if (!scaling_active_) return;
     T* xlam = x->template get_array<policy>();
-    for (int j = 0; j < nc_; j++) xlam[(*cidx_)[j]] *= (*constr_scale_)[j];
+    for (int j = 0; j < num_constraints; j++)
+      xlam[(*constraint_indices)[j]] *= (*constr_scale_)[j];
   }
 
   /// Unscale constraint multipliers: y[j] /= dc[j].
   void unscale_multipliers(std::shared_ptr<Vector<T>> x) const {
     if (!scaling_active_) return;
     T* xlam = x->template get_array<policy>();
-    for (int j = 0; j < nc_; j++) xlam[(*cidx_)[j]] /= (*constr_scale_)[j];
+    for (int j = 0; j < num_constraints; j++)
+      xlam[(*constraint_indices)[j]] /= (*constr_scale_)[j];
   }
 
   T get_obj_scale() const { return obj_scale_; }
   bool has_scaling() const { return scaling_active_; }
 
   // Accessors
-  int get_num_design_variables() const { return np_; }
-  int get_num_constraints() const { return nc_; }
-  int get_num_equalities() const { return nc_; }
+  int get_num_design_variables() const { return num_primal; }
+  int get_num_constraints() const { return num_constraints; }
+  int get_num_equalities() const { return num_constraints; }
   int get_num_inequalities() const { return 0; }
 
-  std::shared_ptr<Vector<T>> get_lbx() const { return lbx_; }
-  std::shared_ptr<Vector<T>> get_ubx() const { return ubx_; }
+  std::shared_ptr<Vector<T>> get_lbx() const { return lbx; }
+  std::shared_ptr<Vector<T>> get_ubx() const { return ubx; }
 
   // Return relaxed bounds if available, otherwise original bounds.
-  // These are the bounds actually used by the IPM backend (info_.lbx/ubx).
+  // These are the bounds actually used by the IPM backend (info.lbx/ubx).
   std::shared_ptr<Vector<T>> get_lbx_relaxed() const {
-    return lbx_relaxed_ ? lbx_relaxed_ : lbx_;
+    return lbx_relaxed ? lbx_relaxed : lbx;
   }
   std::shared_ptr<Vector<T>> get_ubx_relaxed() const {
-    return ubx_relaxed_ ? ubx_relaxed_ : ubx_;
+    return ubx_relaxed ? ubx_relaxed : ubx;
   }
 
   // Relax bounds by bound_relax_factor (default 1e-8).
   // Must be called before initialize_multipliers_and_slacks.
   void relax_bounds(T factor = 1e-8, T constr_viol_tol = 1e-4) {
     if (factor <= 0) return;
-    lbx_relaxed_ =
-        std::make_shared<Vector<T>>(np_, 0, lbx_->get_memory_location());
-    ubx_relaxed_ =
-        std::make_shared<Vector<T>>(np_, 0, ubx_->get_memory_location());
-    T* lb_buf = lbx_relaxed_->template get_array<policy>();
-    T* ub_buf = ubx_relaxed_->template get_array<policy>();
-    ipm::relax_bounds(info_, lb_buf, ub_buf, factor, constr_viol_tol);
-    lbx_relaxed_->copy_host_to_device();
-    ubx_relaxed_->copy_host_to_device();
+    lbx_relaxed =
+        std::make_shared<Vector<T>>(num_primal, 0, lbx->get_memory_location());
+    ubx_relaxed =
+        std::make_shared<Vector<T>>(num_primal, 0, ubx->get_memory_location());
+
+    T* lb_buf = lbx_relaxed->template get_array<policy>();
+    T* ub_buf = ubx_relaxed->template get_array<policy>();
+    detail::relax_bounds(info, lb_buf, ub_buf, factor, constr_viol_tol);
+
+    lbx_relaxed->copy_host_to_device();
+    ubx_relaxed->copy_host_to_device();
   }
 
  private:
-  std::shared_ptr<OptimizationProblem<T, policy>> problem_;
-  std::shared_ptr<Vector<T>> lower_, upper_;
-  MPI_Comm comm_;
-  int np_, nc_;
-  std::shared_ptr<Vector<int>> pidx_, cidx_;
-  std::shared_ptr<Vector<T>> lbx_, ubx_, lbh_;
-  std::shared_ptr<Vector<T>> lbx_relaxed_, ubx_relaxed_;
-  ipm::ProblemInfo<T> info_;
+  std::shared_ptr<OptimizationProblem<T, policy>> problem;
+  MPI_Comm comm;
+
+  int num_primal, num_constraints;
+  std::shared_ptr<Vector<int>> primal_indices;
+  std::shared_ptr<Vector<int>> constraint_indices;
+  std::shared_ptr<Vector<T>> lbx, ubx;
+  std::shared_ptr<Vector<T>> lbx_relaxed, ubx_relaxed;
+  std::shared_ptr<Vector<T>> lbh;
+  detail::OptProblemInfo<T> info;
 
   // Slack-to-constraint mapping (set via set_slack_mapping)
   int n_slacks_ = 0;

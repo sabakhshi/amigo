@@ -336,7 +336,7 @@ class VectorDistribute {
    * @return DistributeContext<T>* New context object
    */
   template <typename T>
-  VecDistributeContext<T>* create_context() {
+  VecDistributeContext<T>* create_context() const {
     return new VecDistributeContext<T>(num_sends, num_recvs, send_indices,
                                        recv_ptr[num_recvs], num_owned_nodes);
   }
@@ -350,7 +350,7 @@ class VectorDistribute {
    */
   template <typename T>
   void begin_forward(std::shared_ptr<Vector<T>> vars,
-                     VecDistributeContext<T>* ctx) {
+                     VecDistributeContext<T>* ctx) const {
     // Get the array pointer based on the policy - this is either a host or
     // device pointer, depending on the policy value
     T* array = vars->template get_array<policy>();
@@ -387,7 +387,7 @@ class VectorDistribute {
    */
   template <typename T>
   void end_forward(std::shared_ptr<Vector<T>> vars,
-                   VecDistributeContext<T>* ctx) {
+                   VecDistributeContext<T>* ctx) const {
     // Wait for everything to complete
     MPI_Waitall(num_sends, ctx->send_requests, MPI_STATUSES_IGNORE);
     MPI_Waitall(num_recvs, ctx->recv_requests, MPI_STATUSES_IGNORE);
@@ -411,7 +411,7 @@ class VectorDistribute {
    */
   template <typename T>
   void begin_reverse_add(std::shared_ptr<Vector<T>> vars,
-                         VecDistributeContext<T>* ctx) {
+                         VecDistributeContext<T>* ctx) const {
     // Get the array that depends on the policy
     T* array = vars->template get_array<policy>();
 
@@ -442,7 +442,7 @@ class VectorDistribute {
    */
   template <typename T>
   void end_reverse_add(std::shared_ptr<Vector<T>> vars,
-                       VecDistributeContext<T>* ctx) {
+                       VecDistributeContext<T>* ctx) const {
     MPI_Waitall(num_sends, ctx->send_requests, MPI_STATUSES_IGNORE);
     MPI_Waitall(num_recvs, ctx->recv_requests, MPI_STATUSES_IGNORE);
 

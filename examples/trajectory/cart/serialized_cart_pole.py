@@ -15,13 +15,8 @@ model.build_module()
 # Initialize everything
 model.initialize()
 
-# Extract the other vectors for the initial point and lower/upper bounds
-x = model.get_values_from_meta("value")
-lower = model.get_values_from_meta("lower")
-upper = model.get_values_from_meta("upper")
-
 # Set up the optimizer
-opt = am.Optimizer(model, x, lower=lower, upper=upper, solver="amigo")
+opt = am.Optimizer(model, solver="amigo")
 
 opt_options = {
     "initial_barrier_param": 1.0,
