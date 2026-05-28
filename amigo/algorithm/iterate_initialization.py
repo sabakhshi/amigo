@@ -6,7 +6,45 @@ gradient-based NLP scaling, and initializes constraint multipliers
 (least-squares by default, affine step when requested).
 """
 
-from ..model import ModelVector
+
+class SlackInitializer:
+    def __init__(self, options, model, problem, optimizer):
+        self.model = model
+        self.options = options
+        self.problem = problem
+        self.optimizer = optimizer
+
+    def initialize_slacks(self, evaluator, state):
+        x = state.get_current_point()
+
+        mu = state.mu
+        self.optimizer.initialize_duals_and_slacks(mu, state.current)
+
+        # Evaluate the gradient at the current point
+        evaluator.evaluate_gradient(state)
+
+        if self.model is not None:
+            # Get the slack and inequality indices
+            slack_indices = self.model.slack_indices
+            ineq_indices = self.model.ineq_constraint_indices
+
+            # Copy the gradient and solution to the host
+            x.copy_device_to_host()
+            state.gradident.copy_device_to_host()
+            x_array = x.get_array()
+            grad_array = state.gradident.get_array()
+
+            # Set the values
+            x_array[slack_indices] += grad_array[ineq_indices]
+
+            # Update the values
+            x.copy_host_to_device()
+            self.grad.copy_host_to_device()
+
+        # The gradient is now invalid because we update the primal-dual point
+        state.invalidate()
+
+        return
 
 
 class IterateInitialization:

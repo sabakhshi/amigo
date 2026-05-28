@@ -42,10 +42,12 @@ class OptimalityScaling:
         zu = self.vars.get_zu()
         z_asum = self.problem.abssum(zl) + self.problem.abssum(zu)
 
-        # Get the lower/upper bounds. This is not GPU compatible. Need to fix this
-        lbx = self.optimizer.get_lbx().get_array()
-        ubx = self.optimizer.get_ubx().get_array()
-        n_bounds = int(np.sum(np.isfinite(lbx)) + np.sum(np.isfinite(ubx)))
+        # Get the lower/upper bounds, copy them to the host. Need to fix this
+        lbx = self.optimizer.get_lbx()
+        ubx = self.optimizer.get_ubx()
+        lbx_array = lbx.get_array()
+        ubx_array = ubx.get_array()
+        n_bounds = int(np.sum(np.isfinite(lbx_array)) + np.sum(np.isfinite(ubx_array)))
 
         # Get the sum of the absolute values of the multipliers
         con_indices = self.problem.get_constraint_indices()

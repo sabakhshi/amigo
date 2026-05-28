@@ -17,10 +17,109 @@ CONVERGED = 1
 CONVERGED_ACCEPTABLE = 2
 DIVERGED = 3
 PRECISION_FLOOR = 4
+ITERATING = 5
 
 
 class ConvergenceCheck:
     """Convergence checks: primary, acceptable, divergence, precision floor."""
+
+    def __init__(self, options):
+        self.options = options
+
+        # The previous residual norm - not initialized
+        self.prev_res_norm = 0.0
+
+    def test_convergence(self, evaluator, state):
+        """
+        Check for convergence
+        """
+        tol = self.options["convergence_tolerance"]
+        dual_inf_tol = self.options["dual_inf_tol"]
+        constr_viol_tol = self.options["constr_viol_tol"]
+        compl_inf_tol = self.options["compl_inf_tol"]
+        diverging_iterates_tol = self.options["diverging_iterates_tol"]
+        acceptable_tol = self.options["acceptable_tol"]
+        acceptable_iter = self.options["acceptable_iter"]
+        acceptable_dual_inf_tol = self.options["acceptable_dual_inf_tol"]
+        acceptable_constr_viol_tol = self.options["acceptable_constr_viol_tol"]
+        acceptable_compl_inf_tol = self.options["acceptable_compl_inf_tol"]
+
+        # Compute NLP error components at mu_target=0
+        d_inf_nlp = state.dual_infeas
+        p_inf_nlp = state.primal_infeas
+        c_inf_nlp = state.complementarity
+        overall_error = state.kkt_error
+
+        # Primary convergence: ALL 4 conditions must hold
+        if (
+            overall_error <= tol
+            and d_inf_nlp <= dual_inf_tol
+            and p_inf_nlp <= constr_viol_tol
+            and c_inf_nlp <= compl_inf_tol
+        ):
+            if self.comm_rank == 0:
+                obj_final = self._compute_barrier_objective(self.vars)
+                print(f"\n{'='*70}")
+                print(f"  Amigo converged in {i} iterations")
+                print(f"{'='*70}")
+                print(f"  Objective value         {obj_final:>20.10e}")
+                print(f"  NLP error               {overall_error:>20.10e}")
+                print(f"  Primal infeasibility    {p_inf_nlp:>20.10e}")
+                print(f"  Dual infeasibility      {d_inf_nlp:>20.10e}")
+                print(f"  Complementarity         {c_inf_nlp:>20.10e}")
+                print(f"  Barrier parameter       {self.barrier_param:>20.10e}")
+                print(f"  Total iterations        {i:>20d}")
+                print(f"{'='*70}")
+            return CONVERGED
+
+        # Divergence check
+        x_max = iterate.problem.maxabs(iterate.vars.get_solution())
+        if x_max > diverging_iterates_tol:
+            if self.comm_rank == 0:
+                print(f"  Diverging iterates: max |x| = {x_max:.2e}")
+            return DIVERGED
+
+        # Acceptable convergence
+        is_acceptable = (
+            overall_error <= acceptable_tol
+            and d_inf_nlp <= acceptable_dual_inf_tol
+            and p_inf_nlp <= acceptable_constr_viol_tol
+            and c_inf_nlp <= acceptable_compl_inf_tol
+        )
+        if acceptable_iter > 0 and is_acceptable:
+            acceptable_counter += 1
+            if acceptable_counter >= acceptable_iter:
+                if self.comm_rank == 0:
+                    obj_acc = iterate.compute_barrier_objective()
+                    print(f"\n{'='*70}")
+                    print(f"  Amigo converged to acceptable point in {i} iterations")
+                    print(f"{'='*70}")
+                    print(f"  Objective value         {obj_acc:>20.10e}")
+                    print(f"  NLP error               {overall_error:>20.10e}")
+                    print(f"  Primal infeasibility    {p_inf_nlp:>20.10e}")
+                    print(f"  Dual infeasibility      {d_inf_nlp:>20.10e}")
+                    print(f"  Complementarity         {c_inf_nlp:>20.10e}")
+                    print(f"  Total iterations        {i:>20d}")
+                    print(f"{'='*70}")
+                return CONVERGED_ACCEPTABLE
+        else:
+            acceptable_counter = 0
+
+        # Precision floor: bit-identical residuals
+        rel_change = abs(res_norm - prev_res_norm) / max(res_norm, 1e-30)
+        if rel_change < 1e-14 and i > 0:
+            precision_floor_count += 1
+        else:
+            precision_floor_count = 0
+        if precision_floor_count >= 3 and is_acceptable:
+            if state.comm_rank == 0:
+                print(
+                    f"  Precision floor: residual unchanged "
+                    f"for {precision_floor_count} iterations"
+                )
+            return PRECISION_FLOOR
+
+        return CONTINUE
 
     def _check_convergence(
         self,

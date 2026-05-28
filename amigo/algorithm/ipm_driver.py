@@ -22,11 +22,13 @@ from .ipm_state import IpmData, IpmState, StepContext
 from .iterate_initialization import IterateInitialization
 from .convergence_check import (
     ConvergenceCheck,
+    CONTINUE,
     CONVERGED,
     CONVERGED_ACCEPTABLE,
     DIVERGED,
     PRECISION_FLOOR,
 )
+
 from .barrier_strategy import make_barrier_strategy
 from .newton_direction import NewtonDirection
 from .optimality_scaling import OptimalityScaling
@@ -46,6 +48,14 @@ from .solvers import (
 )
 
 from .inertia_correction import InertiaCorrector
+
+
+import warnings
+
+from .multiplier_initialization import MultiplierInitializer
+from .iterate_initialization import SlackInitializer
+from .iteration_logger import OptimizationLogger
+from .ipm_state import InteriorPointState, Evaluator
 
 
 class Optimizer(
@@ -593,3 +603,232 @@ class Optimizer(
             print(f"{'='*70}")
 
         return opt_data
+
+
+class NewOptimizer:
+    """Primal-dual interior-point optimizer with filter line search.
+
+    Composes a BarrierStrategy (self.barrier) for the mu update and
+    inherits the remaining algorithmic pieces as mixins.
+    """
+
+    def __init__(
+        self,
+        model=None,
+        x=None,
+        problem=None,
+        solver=None,
+        comm=None,
+    ):
+        """Initialize the optimizer.
+
+        Parameters
+        ----------
+        model : Model
+            The amigo model to optimize
+        x : array-like, optional
+            Initial point
+        solver : Solver, optional
+            Linear solver for the KKT system.
+            May also be a string from ["scipy", "pardiso", "mumps"]
+        comm : MPI communicator, optional
+            For distributed optimization
+        """
+        self.barrier_param = 1.0
+
+        # Set the model and problem
+        if model is not None:
+            self.model = model
+            self.problem = self.model.get_problem()
+        elif problem is not None:
+            self.model = None
+            self.problem = problem
+
+        # Set the design vector
+        if isinstance(x, ModelVector):
+            self.x = x.get_vector()
+        elif isinstance(x, Vector):
+            self.x = x
+        else:
+            self.x = self.problem.create_vector()
+
+        x_init = self.problem.get_initial_point()
+        self.x.copy(x_init)
+
+        self.comm = comm
+        self.distribute = False
+        if self.comm is not None and self.comm.size > 1:
+            self.distribute = True
+
+        # Set up the vectors
+        self._create_interior_point_backend()
+        self._select_solver(solver)
+
+    def _select_solver(self, solver):
+        """Resolve solver spec (instance, string, or None) to a concrete solver."""
+        if solver is None and self.distribute:
+            self.solver = DirectPetscSolver(self.comm, self.problem)
+        elif isinstance(solver, str):
+            solver_pref = solver.lower()
+            if solver_pref == "scipy":
+                self.solver = DirectScipySolver(self.problem)
+            elif solver_pref == "pardiso":
+                self.solver = PardisoSolver(self.problem)
+            elif solver_pref == "mumps":
+                try:
+                    self.solver = MumpsSolver(self.problem)
+                except:
+                    self.solver = AmigoSolver(self.problem)
+            elif solver_pref == "amigo":
+                self.solver = AmigoSolver(self.problem)
+            else:
+                raise ValueError(
+                    f"Unknown solver string '{solver}'. "
+                    "Expected one of: 'scipy', 'pardiso', 'mumps', 'amigo'."
+                )
+        elif solver is not None:
+            self.solver = solver
+        else:
+            self.solver = AmigoSolver(self.problem)
+
+    def _create_interior_point_backend(self):
+        """Create the C++ InteriorPointOptimizer backend and slack mapping."""
+        data_vec = self.problem.get_data_vector()
+        self.x.copy_host_to_device()
+        self.lower.copy_host_to_device()
+        self.upper.copy_host_to_device()
+        data_vec.copy_host_to_device()
+
+        self.optimizer = InteriorPointOptimizer(self.problem)
+        self.vars = self.optimizer.create_opt_vector(self.x)
+        self.update = self.optimizer.create_opt_vector()
+        self.temp = self.optimizer.create_opt_vector()
+
+    def _zero_hessian_indices(self, options, comm_rank):
+        """Resolve zero-Hessian variable names to integer indices."""
+        zero_hessian_indices = None
+        zero_hessian_eps = options["regularization_eps_x_zero_hessian"]
+        zh_vars = options["zero_hessian_variables"]
+        if zh_vars and not self.distribute:
+            zero_hessian_indices = np.sort(self.model.get_indices(zh_vars))
+            if comm_rank == 0:
+                print(
+                    f"  Variable-specific regularization: {len(zero_hessian_indices)} "
+                    f"zero-Hessian vars, eps_x_zero={zero_hessian_eps:.2e}"
+                )
+        return zero_hessian_indices, zero_hessian_eps
+
+    def get_options(self, options={}):
+        return get_default_options(options)
+
+    def get_optimized_point(self):
+        return ModelVector(self.model, x=self.x)
+
+    def optimize(self, options={}):
+        """
+        The set up of the new class structure:
+
+        All data about the current state of the optimizer (scalars, vectors, Hessian etc.) are
+        stored in the InteriorPointState object. This contains all info about the current design
+        point.
+
+        Evaluator is responsible for evaluating the quantities of interest (gradient, Hessian etc.)
+        for the current state and trial points that may become the current state. Each algorithm
+        is responsible for updating the state object so that its internal state remains consistent.
+
+        FilterLineSearch performs a filter line search
+
+
+        """
+
+        # Check and normalize the options dictionary for internal use
+        options = self.get_options(options=options)
+
+        # Class for evaluating problem-specific quantities
+        evaluator = Evaluator(self.problem, self.optimizer)
+
+        # The interior point state object contains information about the design point, the
+        # gradient and the Hessian of the Lagrangian.
+        state = InteriorPointState(self.x, options, self.problem, self.optimizer)
+
+        # Initialize the line search filter algorithm
+        line_search = FilterLineSearch(options, self.problem, self.optimizer)
+
+        # Initialize the feasibility restoration phase
+        # feasibility_restore = self.create_feasibility_restoration(options)
+
+        # Initialize the Newton solver and the underlying
+        newton = self.create_newton_solver(state, options)
+
+        # Initialize the barrier strategy correction algorithm
+        barrier_strategy = BarrierStrategy(options, self.problem, self.optimizer)
+
+        inertia_corrector = InertiaCorrector(
+            self.problem, self.optimizer, state.mu, options
+        )
+
+        # Initialize the convergence check
+        check = ConvergenceCheck(options)
+
+        # Initialize the logger. The logger takes in additional objects that may
+        # provide logging info via "obj.get_log_info()"
+        log_objs = []  #  [newton, barrier_strategy, line_search]
+        logger = OptimizationLogger(options, log_objs=log_objs)
+
+        # Initialize the dual and slack variable values. This utilizes the solver object
+        # to find initial values of the dual variables.
+        slack_init = SlackInitializer(options, self.model, self.problem, self.optimizer)
+        slack_init.initialize_slacks(evaluator, state)
+
+        # Object to initialize the multipliers
+        multiplier_init = MultiplierInitializer(options, self.problem, self.optimizer)
+        multiplier_init.initialize_multipliers(evaluator, self.solver, state)
+
+        # Set the initial status
+        status = CONTINUE
+
+        max_iters = options["max_iterations"]
+        for counter in range(max_iters):
+            # Update the iteration counter
+            state.iter = counter
+
+            # Evaluate the residuals for the convergence check
+            evaluator.evaluate_residual(state)
+
+            # Check for convergence based on the initial point
+            status = check.test_convergence(evaluator, state)
+
+            # Log the information about the iteration and the status of all the
+            # internal objects within the optimizer
+            logger.log_iteration(status, state)
+
+            # If we're successful, break
+            if status == CONVERGED:
+                break
+
+            # Perform an update of the barrier parameter.
+            barrier_strategy.update_barrier_parameter(counter, state)
+
+            # Compute the Newton step. This call factors the KKT matrix, tests the inertia of the
+            # factorization and adjusts the regularization terms until a descent direction is achieved.
+            # If no acceptable step is found, then the
+            step_info = newton.compute_step(self.solver, state)
+
+            do_feas_resto = True
+            if step_info.success:
+                line_search_info = line_search.line_search(self.solver, state)
+
+                if line_search_info.success:
+                    do_feas_resto = False
+
+            # If the line search was not successful, perform feasibility restoration
+            if do_feas_resto:
+                warnings.warn("Feasibility restoration not implemented")
+                break  # feasibility_restore.restoration_phase(self.solver, state)
+
+        else:
+            # The optimization for loop completed normally, so we did not converge
+            counter = max_iters
+            logger.log_iteration(counter, status, state)
+
+        return status

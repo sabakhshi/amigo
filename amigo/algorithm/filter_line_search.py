@@ -11,11 +11,276 @@ acceptance to escape filter stalls.
 """
 
 import numpy as np
+from .filter_acceptance import Filter
+
+
+class FilterLineSearch2:
+    """Filter-based line search, SOC, and watchdog procedure."""
+
+    def __init__(self, problem=None, optimizer=None, options={}):
+        self.options = options
+        self.problem = problem
+        self.optimizer = optimizer
+
+        # Create temporary variables for the line search problem
+        self.temp_vars = self.optimizer.create_opt_vector()
+
+        # Set up an empty filter if neccessary
+        if self.options["filter_line_search"]:
+            self.outer_filter = Filter()
+            self.inner_filter = [
+                Filter(
+                    gamma_phi=options["filter_gamma_phi"],
+                    gamma_theta=options["filter_gamma_theta"],
+                )
+            ]
+        else:
+            self.outer_filter = None
+            self.inner_filler = None
+
+        # Set up the watchdog state
+        watchdog = WatchdogState(self.optimizer)
+        watchdog.trigger = options["watchdog_shortened_iter_trigger"]
+        watchdog.max_trials = options["watchdog_trial_iter_max"]
+
+        return
+
+    def line_search(self, iterate, newton):
+        if self.options["filter_line_search"]:
+            self._line_search_filter(iterate, newton)
+        else:
+            self._line_search_watchdog(iterate, newton)
+
+    def _is_ftype(self, alpha_test):
+        return (
+            ref_dphi < 0.0
+            and alpha_test * (-ref_dphi) ** s_phi > delta * ref_theta**s_theta
+        )
+
+    def _armijo_holds(self, trial_barr, alpha_test):
+        return (trial_barr - ref_barr) - eta_phi * alpha_test * ref_dphi <= EPS10 * abs(
+            ref_barr
+        )
+
+    def _acceptable_to_iterate(self, trial_barr, trial_theta):
+        if trial_barr > ref_barr:
+            basval = 1.0
+            if abs(ref_barr) > 10.0:
+                basval = np.log10(abs(ref_barr))
+            if np.log10(max(trial_barr - ref_barr, 1e-300)) > obj_max_inc + basval:
+                return False
+        return (
+            trial_theta - (1.0 - gamma_theta) * ref_theta <= EPS10 * abs(ref_theta)
+        ) or (
+            (trial_barr - ref_barr) - (-gamma_phi * ref_theta) <= EPS10 * abs(ref_barr)
+        )
+
+    def _check_acceptance(self, trial_barr, trial_theta, alpha_test):
+        if trial_theta > theta_max:
+            return False, False
+        if alpha_test > 0.0 and _is_ftype(alpha_test) and ref_theta <= theta_min:
+            if not _armijo_holds(trial_barr, alpha_test):
+                return False, False
+        else:
+            if not _acceptable_to_iterate(trial_barr, trial_theta):
+                return False, False
+        filt_ok = inner_filter.is_acceptable(trial_barr, trial_theta)
+        return filt_ok, not filt_ok
+
+    def _update_filter(self, trial_barr, alpha_test):
+        if not (_is_ftype(alpha_test) and _armijo_holds(trial_barr, alpha_test)):
+            inner_filter.add(ref_barr, ref_theta)
+
+    def _line_search_filter(self, iterate, newton):
+        max_iters = self.options["max_line_search_iterations"]
+        alpha_red = self.options["backtracking_factor"]
+        gamma_theta = self.options["filter_gamma_theta"]
+        gamma_phi = self.options["filter_gamma_phi"]
+        delta = self.options["filter_delta"]
+        s_theta = self.options["filter_s_theta"]
+        s_phi = self.options["filter_s_phi"]
+        eta_phi = self.options["filter_eta_phi"]
+        alpha_min_frac = 0.05
+        max_soc = self.options["filter_max_soc"]
+        kappa_soc = self.options["filter_kappa_soc"]
+        obj_max_inc = 5.0
+        use_soc = self.options["second_order_correction"]
+        EPS10 = 10.0 * np.finfo(float).eps
+
+        # Reference values
+        if watchdog_ref is not None:
+            ref_theta, ref_barr, ref_dphi = watchdog_ref
+        else:
+            ref_theta = self._compute_filter_theta()
+            ref_barr = phi_current
+            ref_dphi = self.optimizer.compute_barrier_dphi(
+                self.barrier_param,
+                self.vars,
+                self.update,
+                self.res,
+                self.px,
+                self.diag,
+            )
+
+        # theta_min, theta_max (Eq. 21)
+        theta_0 = getattr(self, "_filter_theta_0", ref_theta)
+        theta_min = 1e-4 * max(1.0, theta_0)
+        theta_max = 1e4 * max(1.0, theta_0)
+
+        # Alpha_min (Eq. 23)
+        if watchdog_ref is not None:
+            alpha_min = alpha_x
+        else:
+            alpha_min = gamma_theta
+            if ref_dphi < 0.0:
+                alpha_min = min(gamma_theta, gamma_phi * ref_theta / (-ref_dphi))
+                if ref_theta <= theta_min:
+                    alpha_min = min(
+                        alpha_min,
+                        delta * ref_theta**s_theta / (-ref_dphi) ** s_phi,
+                    )
+            alpha_min *= alpha_min_frac
+
+        # SOC state backup
+        if use_soc:
+            self.optimizer.compute_residual(
+                self.barrier_param, self.vars, self.grad, self.res
+            )
+            # res_orig = self.res.get_array().copy()
+            # update_backup = self.optimizer.create_opt_vector()
+            # update_backup.copy(self.update)
+            # px_orig = self.px.get_array().copy()
+
+            # Back up the original values
+            res_orig = self.problem.create_vector()
+            res_orig.copy(self.res)
+            px_orig = self.problem.create_vector()
+            px_orig.copy(self.px)
+            update_backup = self.optimizer.create_opt_vector()
+            update_backup.copy(self.update)
+
+        alpha_primal = alpha_x
+        n_steps = 0
+        last_rejected_by_filter = False
+
+        while alpha_primal > alpha_min or n_steps == 0:
+            if n_steps >= max_iters:
+                break
+
+            self.optimizer.apply_step_update(
+                alpha_primal, alpha_z, self.vars, self.update, self.temp
+            )
+            self._update_gradient(self.temp.get_solution())
+
+            trial_theta = self._compute_filter_theta(self.temp)
+            trial_barr = self._compute_barrier_objective(self.temp)
+
+            alpha_primal_test = alpha_primal
+
+            accepted, filt_rej = _check_acceptance(
+                trial_barr, trial_theta, alpha_primal_test
+            )
+            if accepted:
+                _update_filter(trial_barr, alpha_primal_test)
+                self.vars.copy(self.temp)
+                return (
+                    alpha_primal / alpha_x,
+                    n_steps + 1,
+                    True,
+                    last_rejected_by_filter,
+                )
+            last_rejected_by_filter = filt_rej
+
+            # SOC: second-order correction for the Maratos effect
+            if use_soc and n_steps == 0:
+                if comm_rank == 0 and options.get("verbose_barrier"):
+                    print(
+                        f"  SOC check: trial_theta={trial_theta:.3e}, "
+                        f"ref_theta={ref_theta:.3e}, "
+                        f"trigger={'YES' if trial_theta >= ref_theta else 'no'}"
+                    )
+            if use_soc and n_steps == 0 and trial_theta >= ref_theta:
+                # c_soc = res_orig.copy()
+                c_soc = res_orig
+                alpha_soc = alpha_primal
+                theta_soc_old = 0.0
+                soc_accepted = False
+
+                for soc_count in range(max_soc):
+                    if soc_count > 0 and trial_theta > kappa_soc * theta_soc_old:
+                        break
+                    theta_soc_old = trial_theta
+
+                    self.optimizer.compute_residual(
+                        self.barrier_param, self.temp, self.grad, self.res
+                    )
+                    # trial_res = self.res.get_array().copy()
+                    # c_soc[mult_ind] = trial_res[mult_ind] + alpha_soc * c_soc[mult_ind]
+
+                    # self.res.get_array()[:] = c_soc
+                    # self.res.copy_host_to_device()
+                    # self._update_gradient(self.vars.get_solution())
+
+                    con_indices = self.problem.get_constraint_indices()
+                    trial_res = self.problem.create_vector()
+                    trial_res.copy(self.res)
+
+                    trial_res.axpy_at(con_indices, alpha_soc, c_soc)
+                    self._update_gradient(self.vars.get_solution())
+
+                    try:
+                        self.solver.solve(self.res, self.px)
+                    except Exception:
+                        break
+                    self.optimizer.compute_update(
+                        self.barrier_param, self.vars, self.px, self.update
+                    )
+
+                    soc_ax, _, soc_az, _ = self.optimizer.compute_max_step(
+                        tau, self.vars, self.update
+                    )
+                    self.optimizer.apply_step_update(
+                        soc_ax, soc_az, self.vars, self.update, self.temp
+                    )
+                    self._update_gradient(self.temp.get_solution())
+
+                    trial_theta = self._compute_filter_theta(self.temp)
+                    trial_barr = self._compute_barrier_objective(self.temp)
+
+                    soc_acc, soc_filt_rej = _check_acceptance(
+                        trial_barr, trial_theta, alpha_primal_test
+                    )
+                    if soc_acc:
+                        _update_filter(trial_barr, alpha_primal_test)
+                        self.vars.copy(self.temp)
+                        soc_accepted = True
+                        break
+
+                    alpha_soc = soc_ax
+
+                if soc_accepted:
+                    if comm_rank == 0:
+                        print(f"  SOC accepted (iter {soc_count+1}/{max_soc})")
+                    return 1.0, n_steps + 1, True, False
+
+                self.update.copy(update_backup)
+                # self.px.get_array()[:] = px_orig
+                # self.px.copy_host_to_device()
+                self.px.copy(px_orig)
+
+            alpha_primal *= alpha_red
+            n_steps += 1
+
+        # All backtracking exhausted
+        self._update_gradient(self.vars.get_solution())
+        return alpha_primal / alpha_x, n_steps, False, last_rejected_by_filter
+
+    def _line_search_watchdog(self, iterate, newton):
+
+        pass
 
 
 class FilterLineSearch:
-    """Filter-based line search, SOC, and watchdog procedure."""
-
     def _compute_barrier_objective(self, vars):
         """Barrier objective phi_mu = f(x) - mu * sum(ln(gaps)).
 

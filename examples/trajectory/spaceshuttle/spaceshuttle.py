@@ -367,7 +367,7 @@ if args.build:
     model.build_module()
 
 # Initialize the model
-model.initialize(order_type=am.OrderingType.NESTED_DISSECTION)
+model.initialize()
 
 data = model.get_data_vector()
 

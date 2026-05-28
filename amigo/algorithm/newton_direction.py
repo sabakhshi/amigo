@@ -11,6 +11,19 @@ LinearSolver base class.
 import numpy as np
 
 
+class Newton:
+    def __init__(self, solver, options):
+
+        self.solver = solver
+        self.options = options
+
+        return
+
+    def factor(self, iterate):
+
+        iterate.update_hessian_and_diagonal()
+
+
 class NewtonDirection:
     """Gradient evaluation, KKT factorization, and augmented-system solve."""
 

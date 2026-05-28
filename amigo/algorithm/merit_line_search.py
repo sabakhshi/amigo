@@ -158,9 +158,11 @@ class MeritLineSearch:
                 reject_callback()
                 self._update_gradient(self.vars.get_solution())
                 return alpha, j + 1, False
+
             elif res_new < 1.1 * ls_baseline:
                 self.vars.copy(self.temp)
                 return alpha, j + 1, True
+
             else:
                 alpha = 0.01
                 self.optimizer.apply_step_update(

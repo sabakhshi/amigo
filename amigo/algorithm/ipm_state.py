@@ -12,6 +12,143 @@ from typing import Any, Optional
 from .solvers import LinearSolver
 
 
+class InteriorPointState:
+    # Iteration counters
+    iter: int
+    restoration_iter: int
+
+    # Barrier parameter
+    mu: float
+
+    # Fraction to the boundary parameter
+    tau: float
+
+    # Current primal-dual vector
+    current: am.OptVector
+
+    # Gradient information
+    gradient: am.Vector
+    gradient_current: bool
+
+    # Second-order information
+    diagonal: am.Vector
+    hessian: am.CSRMat
+    hessian_current: bool
+
+    # Max primal and max dual step lengths
+    max_alpha_primal: float
+    max_alpha_dual: float
+    step: am.Vector
+
+    # Reduced residual and step information
+    residual_norm: float
+    residual: am.Vector
+
+    # Current error measures
+    primal_infeas: float
+    dual_infeas: float
+    complementarity: float
+    kkt_error: float
+
+    def __init__(self, x, options, problem, optimizer):
+        self.iter = 0
+        self.restoration_iter
+        self.mu = options["initial_barrier_param"]
+        self.tau = options["fraction_to_boundary"]
+
+        self.current = optimizer.create_opt_vector(x)
+        self.gradient = problem.create_vector()
+        self.gradient_current = False
+
+        self.residual = self.create_vector()
+        self.diagonal = problem.create_vector()
+        self.hessian = problem.create_matrix()
+        self.hessian_current = False
+
+        self.max_alpha_primal = 1.0
+        self.max_alpha_dual = 1.0
+        self.residual = problem.create_vector()
+        self.step = problem.create_vector()
+
+        self.full_residual = self.create_opt_vector()
+        self.full_step = self.create_opt_vector()
+
+    def get_current_point(self):
+        """Get the current primal-dual vector"""
+        return self.current.get_solution()
+
+    def get_trial_point(self):
+        """Get the trial primal-dual vector"""
+        return self.trial.get_solution()
+
+    def invalidate(self):
+        self.gradient_current = False
+        self.hessian_current = False
+
+
+class Evaluator:
+    def __init__(self, problem, optimizer):
+        self.problem = problem
+        self.optimizer = optimizer
+
+        # Create a temporary constraint vector for later usage
+        self.temp_con = self.problem.create_constraint_vector()
+
+    def evaluate_gradient(self, state):
+        if not state.gradient_current:
+            x = state.current.get_solution()
+            self.problem.gradient(state.obj_scale, x, state.gradient)
+            state.gradient_current = True
+
+    def evaluate_hessian(self, state):
+        if not state.hessian_current:
+            x = state.current.get_solution()
+            self.problem.hessian(state.obj_scale, x, state.hessian)
+            state.hessian_current = True
+
+    def evaluate_barrier_objective(self, state):
+        """Evaluate the log-barrier objective at the current point"""
+
+        return
+
+    def _evaluate_barrier_objective(self, vars):
+        """Evaluate the log-barrier objective at the current point"""
+        x = vars.get_solution().get_current_point()
+
+        # Zero dual, evaluate L(x,0) = f(x), restore
+        con_indices = self.problem.get_constraint_indices()
+
+        # Save the dual values and then zero them
+        x.get_values_at(con_indices, self.temp_con)
+        x.fill_at(con_indices, 0.0)
+        f_obj = self.problem.lagrangian(self.obj_scale, x)
+
+        # Restore the dual values
+        x.set_values_at(con_indices, self.temp_con)
+
+        barrier_log = self.optimizer.compute_barrier_log_sum(self.barrier_param, vars)
+
+        return f_obj + barrier_log
+
+    def compute_infeasibility(self, vars=None):
+        if vars is None:
+            vars = self.vars
+        return self.optimizer.compute_constraint_violation_1norm(vars, self.grad)
+
+    def evaluate_residual(self, state):
+        if not state.gradient_current:
+            self.evaluate_gradient(state)
+
+        # Evaluate the residual and update the residual norm
+        self.residual_norm = self.optimizer.compute_residual(
+            state.mu, self.current, self.gradient, self.residual
+        )
+
+        d_inf_nlp, p_inf_nlp, c_inf_nlp = evaluator.evaluate_kkt_error()
+        s_d_conv, s_c_conv = iterate.compute_optimality_scaling()
+        overall_error = max(d_inf_nlp / s_d_conv, p_inf_nlp, c_inf_nlp / s_c_conv)
+
+
 @dataclass
 class IpmData:
     options: dict
