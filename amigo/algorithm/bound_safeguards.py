@@ -20,6 +20,7 @@ class BoundSafeguards:
           new_sl = min(max(mu / z, s_min), slack_move * max(1, |bound|) + sl)
         Also adjusts the primal x to be consistent: x = lb + new_sl.
         """
+
         eps = np.finfo(np.float64).eps
         s_min = eps * min(1.0, mu)
         if s_min == 0.0:

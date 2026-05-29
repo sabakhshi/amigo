@@ -1127,8 +1127,6 @@ class SparseLDL {
         // for column j is at index n * j - j * (j - 1)/2, but we subtract j
         // from this since the row index begins at i = j. This accounts for
         // indexing Cj using i directly.
-        // const int cjindex = j * contrib_size;
-        // const T* Cj = &C[cjindex];
         const int cjindex = j * contrib_size - j * (j + 1) / 2;
         const T* Cj = &C[cjindex];
 
@@ -1154,8 +1152,6 @@ class SparseLDL {
 
         // Set the offset into the contribution block. This accounts for
         // indexing Cj using i directly
-        // const int cjindex = j * contrib_size;
-        // const T* Cj = &C[cjindex];
         const int cjindex = j * contrib_size - j * (j + 1) / 2;
         const T* Cj = &C[cjindex];
 

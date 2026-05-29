@@ -57,7 +57,7 @@ from .iterate_initialization import SlackInitializer
 from .iteration_logger import OptimizationLogger
 from .ipm_state import InteriorPointState, Evaluator
 from .inertia_correction import InertiaCorrectorNew, AmigoSolverNew
-from .filter_line_search import FilterLineSearchNew
+from .filter_line_search import FilterLineSearchNew, LineSearchInfo
 
 
 class OptimizerOld(
@@ -630,7 +630,7 @@ class BarrierStrategy:
         frac = self.options["monotone_barrier_fraction"]
 
         if state.residual_norm < relative_tol * state.mu:
-            mu_new = max(state.mu * frac, opt_tol)
+            mu_new = max(state.mu * frac, frac * opt_tol)
 
             info.new_barrier = True
             info.mu_old = state.mu
@@ -651,34 +651,28 @@ class NewtonStep:
         self.problem = problem
         self.optimizer = optimizer
 
+        self.update = self.problem.create_vector()
+
     def compute_step(self, solver, evaluator, state):
         # Evalute the residual (may be required since the barrier may have changed)
         evaluator.evaluate_residual(state)
 
         # Solve the linear system to obtain the new step
-        update = state.step.get_solution()
-        solver.solve(state.residual, update)
+        solver.solve(state.residual, self.update)
 
         # Compute the full step
-        self.optimizer.compute_update(state.mu, state.current, update, state.step)
+        self.optimizer.compute_update(state.mu, state.current, self.update, state.step)
 
         # Now, compute the maximum step lengths in the primal and dual directions
         alpha_x, _, alpha_z, _ = self.optimizer.compute_max_step(
             state.tau, state.current, state.step
         )
+
         state.max_alpha_primal = alpha_x
         state.max_alpha_dual = alpha_z
 
         # Indicate that the step has been updated
         state.step_current = True
-
-
-class LineSearchInfo:
-    success: bool
-    num_search_iters: int
-    alpha_primal: float
-    alpha_dual: float
-    # Add other info...
 
 
 class BacktrackLineSearch:
@@ -874,6 +868,12 @@ class Optimizer:
         # Check and normalize the options dictionary for internal use
         options = self.get_options(options=options)
 
+        # TODO: Where should this go?
+        self.optimizer.relax_bounds(1e-8, options["constr_viol_tol"])
+
+        # Continuation control: TODO: this could be more general?
+        continuation_control = options["continuation_control"]
+
         # Class for evaluating problem-specific quantities
         evaluator = Evaluator(self.problem, self.optimizer)
 
@@ -885,7 +885,8 @@ class Optimizer:
         solver = AmigoSolverNew(options, state)
 
         # Initialize the line search filter algorithm
-        line_search = BacktrackLineSearch(options, self.problem, self.optimizer)
+        # line_search = BacktrackLineSearch(options, self.problem, self.optimizer)
+        line_search = FilterLineSearchNew(options, self.problem, self.optimizer)
 
         # Allocate the Newton step
         newton_step = NewtonStep(options, self.problem, self.optimizer)
@@ -924,6 +925,9 @@ class Optimizer:
             # Update the iteration counter
             state.iter = counter
 
+            # Evaluate the objective and barrier function
+            evaluator.evaluate_objective_and_barrier(state)
+
             # Evaluate the residuals for the convergence check
             evaluator.evaluate_residual(state)
 
@@ -940,6 +944,10 @@ class Optimizer:
 
             # Perform an update of the barrier parameter.
             barrier_info = barrier_strategy.update_barrier(state)
+
+            # Callback for the continuation control.
+            if continuation_control is not None:
+                continuation_control(counter, state.residual_norm)
 
             # If the barrier parameter is new, as indicated by the barrier info class, then
             # reset the line search algorithm accordingly

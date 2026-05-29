@@ -50,9 +50,9 @@ class OptimizationLogger:
         iter_data["inf_du"] = state.dual_infeas
         iter_data["compl"] = state.complementarity
         iter_data["nlp_error"] = state.kkt_error
-        iter_data["objective"] = state.objective_value
+        iter_data["objective"] = state.objective_value + state.log_barrier_value
         px = state.step.get_solution()
-        iter_data["step_norm"] = self.problem.norm(px)
+        iter_data["step_norm"] = self.problem.maxabs(px)
 
         self._write_log(status, state, iter_data)
 

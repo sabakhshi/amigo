@@ -416,6 +416,7 @@ with open("race_car_lap.json", "w") as fp:
 # Optimize
 x = model.create_vector()
 opt = am.Optimizer(model, x=x, solver=args.solver)
+# opt = am.OptimizerOld(model, x=x, solver=args.solver)
 
 opt_data = opt.optimize(
     {
@@ -424,7 +425,7 @@ opt_data = opt.optimize(
         "max_line_search_iterations": 30,
         "convergence_tolerance": 1e-8,
         "init_least_squares_multipliers": True,
-        "barrier_strategy": "quality_function",
+        "barrier_strategy": "monotone",
         "quality_function_predictor_corrector": False,
         "quality_function_balancing_term": "cubic",
         "adaptive_mu_safeguard_factor": 1e-1,

@@ -33,6 +33,7 @@ class MultiplierInitializer:
 
         Safeguard: if ||lambda||_inf > lambda_max, discard and set to 0.
         """
+
         # Get the current primal-dual point
         x = state.get_current_point()
 
@@ -73,13 +74,14 @@ class MultiplierInitializer:
             state.current, state.gradient, state.residual
         )
         state.residual.scale(-1.0)
+        state.residual.fill_at(con_indices, 0.0)
 
         # Solve for the update
         update = state.step.get_solution()
         solver.solve(state.residual, update)
 
         # Add the updates to the indices
-        x.axpy_at(con_indices, 1.0, update)
+        x.copy_at(con_indices, update)
 
         # The gradient/Hessian values are invalid now since we just modified the primal-dual vector
         state.invalidate()

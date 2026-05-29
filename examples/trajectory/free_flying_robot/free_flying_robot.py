@@ -94,7 +94,9 @@ class FreeFlyingRobotDynamics(am.Component):
         # State and control inputs
         self.add_input("q", shape=6, label="state [y1,y2,y3,y4,y5,y6]")
         self.add_input("qdot", shape=6, label="state derivatives")
-        self.add_input("u", shape=4, label="control [u1,u2,u3,u4]")
+        self.add_input(
+            "u", shape=4, label="control [u1,u2,u3,u4]", lower=0.0, upper=1.0
+        )
 
         # Constraints
         self.add_constraint("res", shape=6, label="dynamics residuals")
@@ -121,8 +123,8 @@ class FreeFlyingRobotDynamics(am.Component):
         T_total = T1 + T2  # Total thrust
 
         # Trigonometric terms
-        cos_y3 = self.vars["cos_y3"] = am.cos(y3)
-        sin_y3 = self.vars["sin_y3"] = am.sin(y3)
+        cos_y3 = am.cos(y3)
+        sin_y3 = am.sin(y3)
 
         # Dynamics equations (from Betts eq. 8.230-8.235)
         res = [None] * 6
@@ -401,7 +403,7 @@ print(f"Number of variables:     {model.num_variables}")
 print(f"Number of constraints:   {model.num_constraints}")
 
 # Create design variable vector
-x = model.create_vector()
+x = model.get_initial_point()
 x[:] = 0.0
 
 # Initial guess for states - linear interpolation from initial to final
@@ -439,23 +441,7 @@ x["robot.u[:, 1]"] = 0.4 * switch  # u2
 x["robot.u[:, 2]"] = 0.4 * (1 - switch)  # u3
 x["robot.u[:, 3]"] = 0.4 * switch  # u4
 
-# Set bounds
-lower = model.create_vector()
-upper = model.create_vector()
-
-# State bounds (reasonable physical limits)
-lower["robot.q"] = -float("inf")
-upper["robot.q"] = float("inf")
-
-# State derivative bounds (free)
-lower["robot.qdot"] = -float("inf")
-upper["robot.qdot"] = float("inf")
-
-# Control bounds: 0 <= uk <= 1 (since u1+u2 <= 1 and u3+u4 <= 1)
-lower["robot.u"] = 0.0
-upper["robot.u"] = 1.0
-
-opt = am.Optimizer(model, x, lower=lower, upper=upper)
+opt = am.Optimizer(model, x)
 opt_data = opt.optimize(
     {
         "barrier_strategy": "monotone",

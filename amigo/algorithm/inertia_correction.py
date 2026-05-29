@@ -466,7 +466,7 @@ class AmigoSolverNew(LinearSolverNew):
             SolverType.LDL,
             ustab=ustab,
             pivot_tol=pivot_tol,
-            order=OrderingType.DEFAULT,
+            order=OrderingType.NATURAL,
         )
 
     def factor(self, hessian, diagonal):
@@ -765,18 +765,26 @@ class InertiaCorrectorNew:
             and np + nn >= num_total - itol
         )
 
-    def _apply_and_factor(self, solver, diagonal, perturb, hessian):
-        """Apply perturbation, factorize. Returns (n_pos, n_neg, singular)."""
-
+    def _compute_perturbation(self, diagonal, perturb):
         primal_indices = self.problem.get_primal_indices()
         dual_indices = self.problem.get_constraint_indices()
 
         perturb.copy(diagonal)
-        if self._delta_x_curr > 0:
-            perturb.add_scalar_at(primal_indices, self._delta_x_curr)
-        if self._delta_c_curr > 0:
-            perturb.add_scalar_at(dual_indices, -self._delta_c_curr)
 
+        delta_x = self.numerical_eps + self._delta_x_curr
+        if delta_x > 0:
+            perturb.add_scalar_at(primal_indices, delta_x)
+
+        delta_c = self._delta_c_curr
+        if delta_c > 0:
+            perturb.add_scalar_at(dual_indices, -delta_c)
+
+        return
+
+    def _apply_and_factor(self, solver, diagonal, perturb, hessian):
+        """Apply perturbation, factorize. Returns (n_pos, n_neg, singular)."""
+
+        self._compute_perturbation(diagonal, perturb)
         solver.factor(hessian, perturb)
 
         npos, nneg = solver.get_inertia()
@@ -791,15 +799,10 @@ class InertiaCorrectorNew:
         # Evaluate the diagonal at the current point
         evaluator.evaluate_diagonal(state)
 
-        # Build baseline diagonal: Sigma + small numerical eps on primals
-        primal_indices = self.problem.get_primal_indices()
-        state.diagonal.add_scalar_at(primal_indices, self.numerical_eps)
-
-        # if state.zero_hessian_indices is not None:
-        #     diag.add_scalar_at(zero_hessian_indices, self.zero_hessian_eps)
-
+        # Return without modifying the diagonal
         if not solver.inertia_enabled():
-            solver.factor(state.hessian, state.diagonal)
+            self._compute_perturbation(state.diagonal, self.perturbed_diagonal)
+            solver.factor(state.hessian, self.perturbed_diagonal)
             return True
 
         # Prepare new system: save last perturbation, reset current

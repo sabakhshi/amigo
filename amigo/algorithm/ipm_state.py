@@ -119,13 +119,21 @@ class Evaluator:
         self.temp_con = self.problem.create_constraint_vector()
 
     def evaluate_gradient(self, state):
+        """Evaluate the gradient at the current point and store in the state"""
         if not state.gradient_current:
-            x = state.current.get_solution()
-            self.problem.update(x)
-            self.problem.gradient(state.obj_scale, x, state.gradient)
+            self.evaluate_gradient_from_point(
+                state.obj_scale, state.current, state.gradient
+            )
             state.gradient_current = True
 
+    def evaluate_gradient_from_point(self, obj_scale, vars, gradient):
+        """Evaluate the gradient at a trial point and store in an external vector"""
+        x = vars.get_solution()
+        self.problem.update(x)
+        self.problem.gradient(obj_scale, x, gradient)
+
     def evaluate_hessian(self, state):
+        """Evaluate the hessian at the current point and store in the state"""
         if not state.hessian_current:
             x = state.current.get_solution()
             self.problem.hessian(state.obj_scale, x, state.hessian)
@@ -157,8 +165,18 @@ class Evaluator:
         )
         state.objective_value = fobj
         state.log_barrier_value = barrier
-
         return
+
+    def evaluate_directional_derivative(self, state):
+        if not state.gradient_current:
+            self.evaluate_gradient(state)
+        if not state.step_current:
+            raise ValueError("Step not current at this point")
+
+        update = state.step.get_solution()
+        return self.optimizer.compute_barrier_dphi_direct(
+            state.mu, state.current, state.gradient, update
+        )
 
     def evalate_infeasibility_from_gradient(self, grad):
         con_indices = self.problem.get_constraint_indices()
@@ -184,7 +202,7 @@ class Evaluator:
 
         # Now compute the infeasibilities
         state.dual_infeas, state.primal_infeas, state.complementarity = (
-            self.optimizer.compute_kkt_error_mu(state.mu, state.current, state.gradient)
+            self.optimizer.compute_kkt_error_mu(0.0, state.current, state.gradient)
         )
 
         # Compute the scaling

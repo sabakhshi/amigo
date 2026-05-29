@@ -17,13 +17,20 @@ class SlackInitializer:
     def initialize_slacks(self, evaluator, state):
         x = state.get_current_point()
 
-        mu = state.mu
-        self.optimizer.initialize_duals_and_slacks(mu, state.current)
+        # Zero the multipliers
+        con_indices = self.problem.get_constraint_indices()
+        x.fill_at(con_indices, 0.0)
 
-        # Evaluate the gradient at the current point
-        evaluator.evaluate_gradient(state)
+        # Initialize the slack variables
+        self.optimizer.initialize_duals_and_slacks(state.mu, state.current)
+
+        # Invalidate the gradient because we just changed the slack and bound variable values
+        state.invalidate()
 
         if self.model is not None:
+            # Evaluate the gradient at the current point
+            evaluator.evaluate_gradient(state)
+
             # Get the slack and inequality indices
             slack_indices = self.model.slack_indices
             ineq_indices = self.model.ineq_constraint_indices
@@ -31,18 +38,23 @@ class SlackInitializer:
             # Copy the gradient and solution to the host
             x.copy_device_to_host()
             state.gradient.copy_device_to_host()
+
+            # Extract the arrays that are now on the host
             x_array = x.get_array()
             grad_array = state.gradient.get_array()
 
-            # Set the values
+            # Set the values on the host
             x_array[slack_indices] += grad_array[ineq_indices]
 
-            # Update the values
+            # Copy the values back to the host
             x.copy_host_to_device()
-            state.gradient.copy_host_to_device()
 
-        # Everything is now invalid because we updated the primal-dual point
-        state.invalidate()
+            # Re-initialize the sl, su and zl and zu values. These have changed because
+            # we just set the primal slack variables in x.
+            self.optimizer.initialize_duals_and_slacks(state.mu, state.current)
+
+            # Everything is now invalid because we updated the primal-dual point
+            state.invalidate()
 
         return
 
@@ -90,7 +102,6 @@ class IterateInitialization:
 
             # Update the values
             x.copy_host_to_device()
-            self.grad.copy_host_to_device()
 
         self.optimizer.initialize_duals_and_slacks(self.barrier_param, self.vars)
 

@@ -31,7 +31,12 @@ class TrapezoidRule(am.Component):
 
         self.scaling = scaling
 
-        self.add_input("tf")  # Final time as input
+        # Final time as input
+        self.add_input(
+            "tf", lower=50.0 / scaling["time"], upper=200.0 / scaling["time"]
+        )
+
+        # States and rates
         self.add_input("q1")
         self.add_input("q2")
         self.add_input("q1dot")
@@ -72,7 +77,7 @@ class GliderDynamics(am.Component):
         self.add_constant("g", value=9.80665)
 
         # Inputs
-        self.add_input("CL", label="Control")
+        self.add_input("CL", label="Control", lower=0.0, upper=1.4)
         self.add_input("q", shape=4, label="state variables")
         self.add_input("qdot", shape=4, label="state derivatives")
 
@@ -295,13 +300,13 @@ if __name__ == "__main__":
     model.initialize(order_type=am.OrderingType.NESTED_DISSECTION)
 
     with open("glider_model.json", "w") as fp:
-        json.dump(model.get_serializable_data(), fp, indent=2)
+        json.dump(model.serialize(), fp, indent=2)
 
     print(f"Num variables:              {model.num_variables}")
     print(f"Num constraints:            {model.num_constraints}")
 
     # Get the design variables
-    x = model.create_vector()
+    x = model.get_initial_point()
     x[:] = 0.0
 
     # Set initial guess following book recommendations:
@@ -336,19 +341,7 @@ if __name__ == "__main__":
     # Set initial final time
     x["trap.tf"] = tf_guess / scaling["time"]
 
-    # Set bounds
-    lower = model.create_vector()
-    upper = model.create_vector()
-    lower["gd.CL"] = 0.0
-    upper["gd.CL"] = 1.4
-    lower["trap.tf"] = 50.0 / scaling["time"]
-    upper["trap.tf"] = 200.0 / scaling["time"]
-    lower["gd.q"] = -float("inf")
-    upper["gd.q"] = float("inf")
-    lower["gd.qdot"] = -float("inf")
-    upper["gd.qdot"] = float("inf")
-
-    opt = am.Optimizer(model, x, lower=lower, upper=upper)
+    opt = am.Optimizer(model, x)
     data = opt.optimize(
         {
             "barrier_strategy": "monotone",
