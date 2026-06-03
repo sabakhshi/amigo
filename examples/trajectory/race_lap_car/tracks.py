@@ -98,6 +98,9 @@ def _load_csv(csv_path, num_nodes, smooth_sigma=3.0):
 
 
 def load_track(name, num_nodes=301, smooth_sigma=3.0):
+    if name == "oval_dymos":
+        return oval_dymos(num_nodes)
+
     csv_path = TRACKS_DIR / f"{name}.csv"
     if not csv_path.exists():
         available = list_tracks()

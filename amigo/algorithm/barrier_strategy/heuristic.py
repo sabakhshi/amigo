@@ -23,24 +23,30 @@ class HeuristicBarrierStrategy(BarrierStrategy):
 
     def update_barrier(self, evaluator, state):
         kappa_eps = self.options["barrier_tol_factor"]
-        gamma = self.options["heuristic_barrier_gamma"]
-        r = self.options["heuristic_barrier_r"]
-        tol = self.options["convergence_tolerance"]
         compl_inf_tol = self.options["compl_inf_tol"]
-
-        comp, xi = evaluator.evaluate_complementarity(state)
-
-        mu_floor = min(tol, compl_inf_tol) / (kappa_eps + 1.0)
-        mu_new, _ = loqo_heuristic(xi, comp, gamma, r, mu_floor)
+        tol = self.options["convergence_tolerance"]
 
         info = BarrierInfo()
-        info.new_barrier = True
-        info.mu_new = mu_new
+        info.new_barrier = False
+        info.mu_new = state.mu
         info.mu_old = state.mu
 
-        # Update the barrier parameter
-        state.mu = mu_new
-        state.residual_current = False
-        state.step_current = False
+        if state.iter > 0 and state.mu > min(tol, compl_inf_tol) / (kappa_eps + 1):
+            gamma = self.options["heuristic_barrier_gamma"]
+            r = self.options["heuristic_barrier_r"]
+
+            comp, xi = evaluator.evaluate_complementarity(state)
+
+            mu_floor = min(tol, compl_inf_tol) / (kappa_eps + 1.0)
+            mu_new, _ = loqo_heuristic(xi, comp, gamma, r, mu_floor)
+
+            info.new_barrier = True
+            info.mu_new = mu_new
+            info.mu_old = state.mu
+
+            # Update the barrier parameter
+            state.mu = mu_new
+            state.residual_current = False
+            state.step_current = False
 
         return info

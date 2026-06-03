@@ -157,7 +157,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         if self.options["adaptive_mu_globalization"] == "never-monotone":
             return
 
-        # # We had rejected steps, update accordingly
+        # We had rejected steps, update accordingly
         # if info.num_search_iters > 1:
         #     comp, _ = evaluator.evaluate_complementarity(state)
         #     mu_candidate = self.options["adaptive_mu_monotone_init_factor"] * comp
@@ -251,14 +251,14 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         if glob == "obj-constr-filter":
             # Get the constraint gradient at the current point
             f_curr = state.objective_value + state.log_barrier_value
-            theta_curr = evaluator.evalate_infeasibility_from_gradient(state.gradient)
-
+            theta_curr = evaluator.evaluate_infeasibility_from_gradient(
+                state.current, state.gradient
+            )
             m1 = min(
                 self.options.get("filter_max_margin", 1.0),
                 max(f_curr, theta_curr, 1e-30),
             )
             margin = self.options.get("filter_margin_fact", 1e-5) * m1
-
             for f_filt, theta_filt in self.glob_filter:
                 if f_curr + margin < f_filt or theta_curr + margin < theta_filt:
                     return True
@@ -279,7 +279,9 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             self.refs.append(curr)
         elif glob == "obj-constr-filter":
             f_curr = state.objective_value + state.log_barrier_value
-            theta_curr = evaluator.evalate_infeasibility_from_gradient(state.gradient)
+            theta_curr = evaluator.evaluate_infeasibility_from_gradient(
+                state.current, state.gradient
+            )
             self.glob_filter.append((f_curr, theta_curr))
 
     def _lower_safeguard(self, state):

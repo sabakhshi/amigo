@@ -17,7 +17,7 @@ from ..model import ModelVector
 
 # Optimizer imports from algorithm classes
 from .barrier_strategy import make_barrier_strategy
-from .convergence_check import ConvergenceCheck, CONTINUE, CONVERGED
+from .convergence_check import ConvergenceCheck, CONTINUE
 from .default_options import get_default_options
 from .evaluator import Evaluator
 from .feasibility_restoration import FeasibilityRestoration
@@ -126,7 +126,7 @@ class Optimizer:
         # TODO: Where should this go?
         self.optimizer.relax_bounds(1e-8, options["constr_viol_tol"])
 
-        # TODO: Make this more general
+        # Continuation control object, if any
         continuation_control = options["continuation_control"]
 
         # Class for evaluating problem-specific quantities
@@ -195,13 +195,13 @@ class Optimizer:
             # internal objects within the optimizer
             logger.log_iteration(status, state)
 
-            # If we're successful, break
-            if status == CONVERGED:
+            # Break if the check indicates we shouldn't continue
+            if status != CONTINUE:
                 break
 
             # Callback for the continuation control.
             if continuation_control is not None:
-                continuation_control(counter, state.residual_norm)
+                continuation_control(state)
 
             # Perform an update of the barrier parameter prior to any factorization or step
             barrier_info = barrier_strategy.update_barrier(evaluator, state)

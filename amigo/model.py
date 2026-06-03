@@ -356,7 +356,7 @@ class ModelVector:
     """
     ModelVector class
 
-    This class wraps the c++ class instance and enables access via the input,
+    This class wraps a c++ class instance of a vector and enables access via the input,
     constraint, data or output names that are defined within a model. To enable
     access via name, the class maintains a reference to the underlying Model
     instance. Alternatively, the underlying vector components can be accessed by
@@ -439,6 +439,17 @@ class ModelVector:
         for d in data_list:
             self[d["comp"]] = d["data"]
         return
+
+
+class MetaView:
+    """This class enables meta to be set like a vector"""
+
+    def __init__(self, model, meta_name):
+        self.model = model
+        self.meta_name = meta_name
+
+    def __setitem__(self, key, value):
+        self.model.set_meta(self.meta_name, key, value)
 
 
 class Model:
@@ -819,6 +830,12 @@ class Model:
         self._staged_fixed_vars.append((expr, indices))
         return
 
+    def get_meta_view(self, meta_name: str):
+        """
+        Get a MetaView object to set the meta data like vector components
+        """
+        return MetaView(self, meta_name)
+
     def set_meta(self, meta_name: str, name: str, data: List | np.ndarray):
         """
         Set meta data into the model.
@@ -837,6 +854,10 @@ class Model:
         self._staged_meta_data.append((meta_name, name, data))
 
         return
+
+    def is_initialize(self):
+        """Returns true if the model is initialized"""
+        return self._initialized
 
     def initialize(
         self, comm=COMM_WORLD, order_type=OrderingType.DEFAULT, order_for_block=False

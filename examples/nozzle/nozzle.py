@@ -427,11 +427,120 @@ def compute_pressure_target(
     return M_target, p_target
 
 
-def get_initial_point_and_bounds(model):
-    # Get the design variables
-    x = model.create_vector()
-    lower = model.create_vector()
-    upper = model.create_vector()
+def create_model(module_name, num_cells, gamma, T_res, p_res, Astar, length, nctrl):
+    # The cell size
+    dx = length / num_cells
+
+    # Create the model
+    model = am.Model(module_name)
+
+    # Add the flux computations at the interior points
+    model.add_component("flux", num_cells - 1, RoeFlux(gamma=gamma))
+
+    # Add the flux computations at the end points
+    inlet = SubsonicInletFlux(gamma=gamma, T_res=T_res, p_res=p_res)
+    model.add_component("inlet", 1, inlet)
+
+    outlet = SubsonicOutletFlux(gamma=gamma, T_res=T_res, p_res=p_res)
+    model.add_component("outlet", 1, outlet)
+
+    # Add the 1D nozzle
+    model.add_component("nozzle", num_cells, Nozzle(gamma=gamma, dx=dx))
+
+    # Add the nozzle boundary condition calculation
+    model.add_component("calc", 2, ExactNozzleMachCalc(gamma=gamma, Astar=Astar))
+
+    # Add the objective function
+    model.add_component("objective", num_cells, Objective(gamma=gamma, dx=dx))
+
+    # Add the Bspline area calculation component
+    xi_interface = np.linspace(0, length, num_cells + 1)
+    area_bspline = BSpline(
+        input_name="area_ctrl",
+        output_name="A",
+        interp_points=xi_interface,
+        num_ctrl_points=nctrl,
+        length=length,
+    )
+    model.add_model("area", area_bspline.create_model())
+
+    # Add the Bspline derivative evaluation component
+    first_cell = 0.5 * dx
+    last_cell = length - 0.5 * dx
+    xi_cell_center = np.linspace(first_cell, last_cell, num_cells)
+
+    area_deriv_bspline = BSpline(
+        input_name="area_ctrl",
+        output_name="dAdx",
+        interp_points=xi_cell_center,
+        num_ctrl_points=nctrl,
+        length=length,
+        deriv=1,
+    )
+    model.add_model("area_derivative", area_deriv_bspline.create_model())
+
+    # Add the continuation components
+    pseudo_transient = PseudoTransient(gamma=gamma, dx=dx)
+    model.add_component("pseudo_transient", num_cells, pseudo_transient)
+
+    design_continuation = DesignContinuation()
+    model.add_component("design_continuation", nctrl, design_continuation)
+
+    # Link the states
+    model.link(f"nozzle.Q[:-1, :]", "flux.QL")
+    model.link(f"nozzle.Q[1:, :]", "flux.QR")
+
+    # Link the fluxes
+    model.link(f"nozzle.FL[1:, :]", "flux.F")
+    model.link(f"nozzle.FR[:-1, :]", "flux.F")
+
+    # Link the control areas
+    model.link(
+        "area.control_points.area_ctrl", "area_derivative.control_points.area_ctrl"
+    )
+
+    # Link the area evaluations to the fluxes and boundary conditions
+    model.link("area.interp_values.A[1:-1]", "flux.A")
+
+    # Link the Area and dAdx values to the nozzle equations
+    model.link("nozzle.dAdx", "area_derivative.interp_values.dAdx")
+
+    # Link the input boundary states and fluxes
+    model.link("area.interp_values.A[0]", "inlet.A_inlet")
+    model.link("nozzle.Q[0, :]", "inlet.Q[0, :]")
+    model.link("nozzle.FL[0, :]", "inlet.F[0, :]")
+
+    # Link the output boundary states and fluxes
+    model.link("area.interp_values.A[-1]", "outlet.A_outlet")
+    model.link("nozzle.Q[-1, :]", "outlet.Q[0, :]")
+    model.link("nozzle.FR[-1, :]", "outlet.F[0, :]")
+
+    # Link the objective states
+    model.link("nozzle.Q", "objective.Q")
+
+    # Connect the nozzle boundary condition calculations
+    model.link("area.interp_values.A[0]", "calc.A[0]")
+    model.link("inlet.M_inlet", "calc.M[0]")
+
+    model.link("area.interp_values.A[-1]", "calc.A[1]")
+    model.link("outlet.M_outlet", "calc.M[1]")
+
+    # Link the pseudo-transient continuation values
+    model.link("pseudo_transient.Q", "nozzle.Q")
+    model.link("pseudo_transient.res", "nozzle.res")
+    model.link("pseudo_transient.CFL[1:]", "pseudo_transient.CFL[0]")
+
+    # Link the design continuation parameters
+    model.link("design_continuation.area_ctrl", "area.control_points.area_ctrl")
+    model.link(
+        "design_continuation.diagonal_weight[1:]",
+        "design_continuation.diagonal_weight[0]",
+    )
+
+    # Set meta data into the model
+    x = model.get_meta_view("value")
+    lower = model.get_meta_view("lower")
+    upper = model.get_meta_view("upper")
 
     # Set the initial solution guess
     rho = 0.5
@@ -462,8 +571,8 @@ def get_initial_point_and_bounds(model):
     upper["outlet.M_outlet"] = 1.0
 
     # Set the lower and upper bounds for Q
-    lower["nozzle.Q"] = float("-inf")
-    upper["nozzle.Q"] = float("inf")
+    lower["nozzle.Q"] = -am.inf
+    upper["nozzle.Q"] = am.inf
 
     # Set a lower variable bound on the density
     lower["nozzle.Q[:, 0]"] = 1e-3
@@ -478,18 +587,34 @@ def get_initial_point_and_bounds(model):
     upper["area.control_points.area_ctrl"] = 3.0
 
     # Set the remaining variable lower and upper bounds
-    lower["area.interp_values.A"] = -float("inf")
-    upper["area.interp_values.A"] = float("inf")
-    lower["area_derivative.interp_values.dAdx"] = float("-inf")
-    upper["area_derivative.interp_values.dAdx"] = float("inf")
-    lower["flux.F"] = float("-inf")
-    upper["flux.F"] = float("inf")
-    lower["inlet.F"] = float("-inf")
-    upper["inlet.F"] = float("inf")
-    lower["outlet.F"] = float("-inf")
-    upper["outlet.F"] = float("inf")
+    lower["area.interp_values.A"] = -am.inf
+    upper["area.interp_values.A"] = am.inf
+    lower["area_derivative.interp_values.dAdx"] = -am.inf
+    upper["area_derivative.interp_values.dAdx"] = am.inf
+    lower["flux.F"] = -am.inf
+    upper["flux.F"] = am.inf
+    lower["inlet.F"] = -am.inf
+    upper["inlet.F"] = am.inf
+    lower["outlet.F"] = -am.inf
+    upper["outlet.F"] = am.inf
 
-    return x, lower, upper
+    # Compute the non-dimensional locations to evaluate the area
+    eta = xi_cell_center / length
+
+    # Compute the target area distribution
+    A_target = compute_area_target(eta)
+
+    # Evaluate the target pressure distribution
+    M_target, p_target = compute_pressure_target(A_target, p_res, gamma, Astar)
+
+    # Set the pressure target distribution
+    model.set_data("objective.p0", p_target)
+
+    # Set the initial continuation parameters
+    model.set_data("pseudo_transient.CFL[0]", 1.0)
+    model.set_data("design_continuation.diagonal_weight[0]", 100.0)
+
+    return model, A_target, M_target, p_target
 
 
 parser = argparse.ArgumentParser()
@@ -511,7 +636,7 @@ parser.add_argument(
     help="Enable the Largrange-Newton-Krylov-Schur inexact solver",
 )
 parser.add_argument(
-    "--solver", dest="solver", choices=["amigo", "mumps", "cuda"], default="mumps"
+    "--solver", dest="solver", choices=["amigo", "mumps", "cuda"], default="amigo"
 )
 parser.add_argument(
     "--num-cells", dest="num_cells", default=400, type=int, help="Number of cells"
@@ -551,133 +676,18 @@ Astar = 0.7
 # Set values for the length
 length = 10.0
 
-# Set the constants needed for the inputs/outputs
-dx = length / args.num_cells
-
 # Number of control points
 nctrl = 10
 
-# Create the model
-model = am.Model("nozzle_module")
-
-# Add the flux computations at the interior points
-model.add_component("flux", args.num_cells - 1, RoeFlux(gamma=gamma))
-
-# Add the flux computations at the end points
-inlet = SubsonicInletFlux(gamma=gamma, T_res=T_res, p_res=p_res)
-model.add_component("inlet", 1, inlet)
-
-outlet = SubsonicOutletFlux(gamma=gamma, T_res=T_res, p_res=p_res)
-model.add_component("outlet", 1, outlet)
-
-# Add the 1D nozzle
-model.add_component(
-    "nozzle", args.num_cells, Nozzle(gamma=gamma, dx=(length / args.num_cells))
-)
-
-# Add the nozzle boundary condition calculation
-model.add_component("calc", 2, ExactNozzleMachCalc(gamma=gamma, Astar=Astar))
-
-# Add the objective function
-model.add_component(
-    "objective", args.num_cells, Objective(gamma=gamma, dx=(length / args.num_cells))
-)
-
-# Add the Bspline area calculation component
-xi_interface = np.linspace(0, length, args.num_cells + 1)
-area_bspline = BSpline(
-    input_name="area_ctrl",
-    output_name="A",
-    interp_points=xi_interface,
-    num_ctrl_points=nctrl,
-    length=length,
-)
-model.add_model("area", area_bspline.create_model())
-
-# Add the Bspline derivative evaluation component
-first_cell = 0.5 * dx
-last_cell = length - 0.5 * dx
-xi_cell_center = np.linspace(first_cell, last_cell, args.num_cells)
-
-area_deriv_bspline = BSpline(
-    input_name="area_ctrl",
-    output_name="dAdx",
-    interp_points=xi_cell_center,
-    num_ctrl_points=nctrl,
-    length=length,
-    deriv=1,
-)
-model.add_model("area_derivative", area_deriv_bspline.create_model())
-
-# Add the continuation components
-pseudo_transient = PseudoTransient(gamma=gamma, dx=(length / args.num_cells))
-model.add_component("pseudo_transient", args.num_cells, pseudo_transient)
-
-design_continuation = DesignContinuation()
-model.add_component("design_continuation", nctrl, design_continuation)
-
-# Link the states
-model.link(f"nozzle.Q[:-1, :]", "flux.QL")
-model.link(f"nozzle.Q[1:, :]", "flux.QR")
-
-# Link the fluxes
-model.link(f"nozzle.FL[1:, :]", "flux.F")
-model.link(f"nozzle.FR[:-1, :]", "flux.F")
-
-# Link the control areas
-model.link("area.control_points.area_ctrl", "area_derivative.control_points.area_ctrl")
-
-# Link the area evaluations to the fluxes and boundary conditions
-model.link("area.interp_values.A[1:-1]", "flux.A")
-
-# Link the Area and dAdx values to the nozzle equations
-model.link("nozzle.dAdx", "area_derivative.interp_values.dAdx")
-
-# Link the input boundary states and fluxes
-model.link("area.interp_values.A[0]", "inlet.A_inlet")
-model.link("nozzle.Q[0, :]", "inlet.Q[0, :]")
-model.link("nozzle.FL[0, :]", "inlet.F[0, :]")
-
-# Link the output boundary states and fluxes
-model.link("area.interp_values.A[-1]", "outlet.A_outlet")
-model.link("nozzle.Q[-1, :]", "outlet.Q[0, :]")
-model.link("nozzle.FR[-1, :]", "outlet.F[0, :]")
-
-# Link the objective states
-model.link("nozzle.Q", "objective.Q")
-
-# Connect the nozzle boundary condition calculations
-model.link("area.interp_values.A[0]", "calc.A[0]")
-model.link("inlet.M_inlet", "calc.M[0]")
-
-model.link("area.interp_values.A[-1]", "calc.A[1]")
-model.link("outlet.M_outlet", "calc.M[1]")
-
-# Link the pseudo-transient continuation values
-model.link("pseudo_transient.Q", "nozzle.Q")
-model.link("pseudo_transient.res", "nozzle.res")
-model.link("pseudo_transient.CFL[1:]", "pseudo_transient.CFL[0]")
-
-# Link the design continuation parameters
-model.link("design_continuation.area_ctrl", "area.control_points.area_ctrl")
-model.link(
-    "design_continuation.diagonal_weight[1:]", "design_continuation.diagonal_weight[0]"
+module_name = "nozzle_module"
+model, A_target, M_target, p_target = create_model(
+    module_name, args.num_cells, gamma, T_res, p_res, Astar, length, nctrl
 )
 
 if args.build:
-    source_dir = Path(__file__).resolve().parent
-    model.build_module(source_dir=source_dir)
+    model.build_module()
 
 model.initialize()
-
-# Get the data and set the target pressure distribution
-data = model.get_data_vector()
-
-# Compute the non-dimensional locations to evaluate the area
-eta = xi_cell_center / length
-
-# Compute the target area distribution
-A_target = compute_area_target(eta)
 
 solver = args.solver
 if args.use_lnks:
@@ -700,9 +710,15 @@ if args.use_lnks:
     )
 
 
-def continuation_control(iteration, res_norm):
-    data["pseudo_transient.CFL[0]"] = np.min((10000.0, 10.0 + 10.0 * iteration))
-    data["design_continuation.diagonal_weight[0]"] = np.max((0.0, 100.0 - iteration))
+def continuation_control(state):
+    iteration = state.iter
+    data = model.get_data_vector()
+    # data["design_continuation.diagonal_weight[0]"] = np.max((0.0, 100.0 - iteration))
+    # data["pseudo_transient.CFL[0]"] = np.min((10000.0, 10.0 + 10.0 * iteration))
+
+    name = "design_continuation.diagonal_weight[0]"
+    data[name] = np.max((0.0, 100.0 - 2 * iteration))
+    data["pseudo_transient.CFL[0]"] = np.min((10000.0, 10.0 + 5.0 * iteration))
     data.get_vector().copy_host_to_device()
     return
 
@@ -711,36 +727,25 @@ def continuation_control(iteration, res_norm):
 print(f"Num variables:              {model.num_variables}")
 print(f"Num constraints:            {model.num_constraints}")
 
-for opt_iter in range(1):
-    # Evaluate the target pressure distribution
-    M_target, p_target = compute_pressure_target(A_target, p_res, gamma, Astar)
+# Vector to store the solution
+x = model.create_vector()
 
-    # Set the pressure target distribution
-    data["objective.p0"] = p_target
+# opt = OptimizerOld(model, x)
+opt = am.Optimizer(model, x)
 
-    # Set the initial continuation parameters
-    data["pseudo_transient.CFL[0]"] = 10.0
-    data["design_continuation.diagonal_weight[0]"] = 100.0
-
-    # Set the area derivative data
-    data.get_vector().copy_host_to_device()
-
-    # Set the initial point and bounds
-    x, lower, upper = get_initial_point_and_bounds(model)
-
-    # Set up the optimizer
-    opt = am.Optimizer(model, x, lower=lower, upper=upper, solver=solver)
-
-    opt_history = opt.optimize(
-        {
-            "max_iterations": 1000,
-            "record_components": ["area.control_points.area_ctrl"],
-            "max_line_search_iterations": 4,
-            "convergence_tolerance": 1e-9,
-            "monotone_barrier_fraction": 0.1,
-            "continuation_control": continuation_control,
-        }
-    )
+opt_history = opt.optimize(
+    {
+        "solver": args.solver,
+        "barrier_strategy": "heuristic",
+        "max_iterations": 200,
+        "record_components": ["area.control_points.area_ctrl"],
+        "max_line_search_iterations": 30,
+        "convergence_tolerance": 1e-9,
+        "monotone_barrier_fraction": 0.1,
+        "continuation_control": continuation_control,
+        "verbose_barrier": False,
+    }
+)
 
 opt_history["num_cells"] = args.num_cells
 opt_history["num_variables"] = model.num_variables
@@ -748,24 +753,6 @@ opt_history["num_constraints"] = model.num_constraints
 
 with open(args.opt_filename, "w") as fp:
     json.dump(opt_history, fp, indent=2, default=lambda obj: "")
-
-inputs, cons, _, _ = model.get_names()
-
-res = model.create_vector()
-model.problem.gradient(1.0, x.get_vector(), res.get_vector())
-inputs.extend(cons)
-
-# Copy the info to the host
-x.get_vector().copy_device_to_host()
-res.get_vector().copy_device_to_host()
-
-print("Variable summary")
-for name in inputs:
-    print(f"{name:<40} {np.linalg.norm(x[name])}")
-
-print("Residual summary")
-for name in inputs:
-    print(f"{name:<40} {np.linalg.norm(res[name])}")
 
 # Plot the solution
 rho = x["nozzle.Q[:, 0]"]

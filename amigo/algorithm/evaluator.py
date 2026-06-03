@@ -69,16 +69,19 @@ class Evaluator:
             state.mu, state.current, state.gradient, update
         )
 
-    def evalate_infeasibility_from_gradient(self, grad):
-        con_indices = self.problem.get_constraint_indices()
-        grad.get_values_at(con_indices, self.temp_con)
-        return self.problem.abssum(self.temp_con)
+    def evaluate_infeasibility_from_gradient(self, vars, grad):
+        return self.optimizer.compute_constraint_violation_1norm(vars, grad)
+        # con_indices = self.problem.get_constraint_indices()
+        # grad.get_values_at(con_indices, self.temp_con)
+        # return self.problem.abssum(self.temp_con)
 
     def evaluate_infeasibility(self, state):
         if not state.gradient_current:
             self.evaluate_gradient(state)
 
-        infeas = self.evalate_infeasibility_from_gradient(state.gradient)
+        infeas = self.evaluate_infeasibility_from_gradient(
+            state.current, state.gradient
+        )
         state.con_infeasibility = infeas
         return
 

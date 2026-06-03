@@ -21,7 +21,7 @@ def get_default_options(options={}):
     """
     default = {
         "max_iterations": 100,
-        "barrier_strategy": "heuristic",  # "heuristic", "monotone", "quality_function"
+        "barrier_strategy": "monotone",  # "heuristic", "monotone", "quality_function"
         "monotone_barrier_fraction": 0.1,
         "convergence_tolerance": 1e-8,
         "dual_inf_tol": 1.0,

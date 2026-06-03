@@ -15,8 +15,8 @@ import argparse
 class HS65(am.Component):
     def __init__(self):
         super().__init__()
-        self.add_input("x1", value=-5.0, lower=-4.5, upper=4.5)
-        self.add_input("x2", value=5.0, lower=-4.5, upper=4.5)
+        self.add_input("x1", value=-4.0, lower=-4.5, upper=4.5)
+        self.add_input("x2", value=4.0, lower=-4.5, upper=4.5)
         self.add_input("x3", value=0.0, lower=-5.0, upper=5.0)
         self.add_objective("obj")
         self.add_constraint("c1", lower=0.0, upper=float("inf"))

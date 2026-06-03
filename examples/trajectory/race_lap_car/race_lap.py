@@ -22,7 +22,27 @@ import json
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from tracks import oval_dymos
+from tracks import load_track
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--build", action="store_true")
+parser.add_argument(
+    "--solver", dest="solver", choices=["amigo", "mumps"], default="mumps"
+)
+parser.add_argument(
+    "--track",
+    dest="track",
+    choices=[
+        "oval_dymos",
+        "berlin_2018",
+        "modena_2019",
+        "handling_track",
+        "rounded_rectangle",
+    ],
+    default="oval_dymos",
+)
+args = parser.parse_args()
+
 
 # Vehicle parameters
 M = 800.0
@@ -62,7 +82,7 @@ num_intervals = 300
 num_nodes = num_intervals + 1
 EPS_DELTA = 1e-3
 
-track = oval_dymos(num_nodes)
+track = load_track(args.track, num_nodes)
 s_final = track.s_total
 s_nodes = track.s
 kappa_nodes = track.kappa
@@ -76,10 +96,10 @@ print(f"Curvature: [{kappa_nodes.min():.4f}, {kappa_nodes.max():.4f}] 1/m")
 class RacecarCollocation(am.Component):
     """Trapezoidal collocation: q2 - q1 - 0.5*ds*(f1 + f2) = 0."""
 
-    def __init__(self, scaling, ds):
+    def __init__(self, scaling):
         super().__init__()
         self.scaling = scaling
-        self.add_constant("ds", value=ds)
+        self.add_data("ds")
         self.add_data("kappa1", value=0.0)
         self.add_data("kappa2", value=0.0)
         self.add_input("q1", shape=8)
@@ -174,7 +194,7 @@ class RacecarCollocation(am.Component):
     def compute(self):
         q1, q2 = self.inputs["q1"], self.inputs["q2"]
         u1, u2 = self.inputs["u1"], self.inputs["u2"]
-        ds_val = self.constants["ds"]
+        ds_val = self.data["ds"]
         f1 = self._dynamics(q1, u1, self.data["kappa1"])
         f2 = self._dynamics(q2, u2, self.data["kappa2"])
         self.constraints["res"] = [
@@ -327,7 +347,7 @@ def create_racecar_model(module_name="racecar_mod", num_intervals=300, ds=1.0):
     n_states, n_controls = 8, 2
 
     model = am.Model(module_name)
-    model.add_component("colloc", num_intervals, RacecarCollocation(scaling, ds))
+    model.add_component("colloc", num_intervals, RacecarCollocation(scaling))
     model.add_component("nc", num_nodes, NodeConstraints(scaling))
     model.add_component("ic", 1, InitialTime())
     model.add_component("obj", 1, LapTimeObjective())
@@ -392,16 +412,10 @@ def create_racecar_model(module_name="racecar_mod", num_intervals=300, ds=1.0):
     model.set_meta("value", "colloc.u1[:, 1]", 0.1)
     model.set_meta("value", "colloc.u2[:, 1]", 0.1)
 
+    model.set_data("colloc.ds", ds)
+
     return model
 
-
-# --- Main ---
-parser = argparse.ArgumentParser()
-parser.add_argument("--build", action="store_true")
-parser.add_argument(
-    "--solver", dest="solver", choices=["amigo", "mumps"], default="mumps"
-)
-args = parser.parse_args()
 
 model = create_racecar_model(num_intervals=num_intervals, ds=ds)
 if args.build:
@@ -419,12 +433,12 @@ x = model.create_vector()
 options = {
     "solver": "amigo",
     "initial_barrier_param": 1.0,
-    "max_iterations": 200,
+    "max_iterations": 500,
     "max_line_search_iterations": 30,
     "convergence_tolerance": 1e-8,
     "init_least_squares_multipliers": True,
-    "barrier_strategy": "heuristic",
-    "quality_function_predictor_corrector": True,
+    "barrier_strategy": "quality_function",
+    "quality_function_predictor_corrector": False,
     "quality_function_balancing_term": "cubic",
     "adaptive_mu_safeguard_factor": 1e-1,
     "filter_line_search": True,

@@ -73,6 +73,8 @@ class FilterLineSearch(LineSearch):
                 reset = True
         elif barrier_info.mu_new < 0.1 * barrier_info.mu_old:
             reset = True
+        elif self.options["barrier_strategy"] == "quality_function":
+            reset = True
 
         if reset:
             self.filter.clear()
@@ -163,7 +165,9 @@ class FilterLineSearch(LineSearch):
             state.mu, state.obj_scale, state.current
         )
         base.ref_barr = fobj + barrier
-        base.ref_theta = evaluator.evalate_infeasibility_from_gradient(state.gradient)
+        base.ref_theta = evaluator.evaluate_infeasibility_from_gradient(
+            state.current, state.gradient
+        )
         base.ref_dphi = evaluator.evaluate_directional_derivative(state)
 
         return base
@@ -243,7 +247,9 @@ class FilterLineSearch(LineSearch):
             trial_barr = fobj + barrier
 
             # Compute the l1 norm of the constraint violation
-            trial_theta = evaluator.evalate_infeasibility_from_gradient(self.trial_grad)
+            trial_theta = evaluator.evaluate_infeasibility_from_gradient(
+                self.trial, self.trial_grad
+            )
 
             accepted = self.check_acceptance(
                 base, trial_barr, trial_theta, alpha_primal
@@ -277,6 +283,7 @@ class FilterLineSearch(LineSearch):
 
     def add_log_info(self, info):
         if self.current_info is not None:
+            info["filter_size"] = len(self.filter)
             info["line_iters"] = self.current_info.num_search_iters
             info["alpha_x"] = self.current_info.alpha_primal
             info["alpha_z"] = self.current_info.alpha_dual

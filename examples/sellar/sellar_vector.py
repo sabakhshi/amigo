@@ -1,6 +1,5 @@
 import amigo as am
 import argparse
-import json
 
 
 class Disp1(am.Component):
@@ -8,41 +7,33 @@ class Disp1(am.Component):
         super().__init__()
 
         self.add_input("x")
-        self.add_input("z1", value=1.0)
-        self.add_input("z2", value=1.0)
-        self.add_input("y1", value=1.0)
-        self.add_input("y2", value=1.0)
+        self.add_input("z", shape=2, value=[1, 1])
+        self.add_input("y", shape=2, value=[1, 1])
 
         self.add_constraint("c1")
 
     def compute(self):
         x = self.inputs["x"]
-        z1 = self.inputs["z1"]
-        z2 = self.inputs["z2"]
-        y1 = self.inputs["y1"]
-        y2 = self.inputs["y2"]
+        z = self.inputs["z"]
+        y = self.inputs["y"]
 
-        self.constraints["c1"] = z1**2 + z2 + x - 0.2 * y2 - y1
+        self.constraints["c1"] = z[0] ** 2 + z[1] + x - 0.2 * y[1] - y[0]
 
 
 class Disp2(am.Component):
     def __init__(self):
         super().__init__()
 
-        self.add_input("z1")
-        self.add_input("z2")
-        self.add_input("y1")
-        self.add_input("y2")
+        self.add_input("z", shape=2)
+        self.add_input("y", shape=2)
 
         self.add_constraint("c2")
 
     def compute(self):
-        z1 = self.inputs["z1"]
-        z2 = self.inputs["z2"]
-        y1 = self.inputs["y1"]
-        y2 = self.inputs["y2"]
+        z = self.inputs["z"]
+        y = self.inputs["y"]
 
-        self.constraints["c2"] = am.sqrt(y1) + z1 + z2 - y2
+        self.constraints["c2"] = am.sqrt(y[0]) + z[0] + z[1] - y[1]
 
 
 class Objective(am.Component):
@@ -51,37 +42,35 @@ class Objective(am.Component):
         self.add_objective("obj")
 
         self.add_input("x")
-        self.add_input("z2")
-        self.add_input("y1")
-        self.add_input("y2")
+        self.add_input("z", shape=2)
+        self.add_input("y", shape=2)
 
     def compute(self):
         x = self.inputs["x"]
-        z2 = self.inputs["z2"]
-        y1 = self.inputs["y1"]
-        y2 = self.inputs["y2"]
+        z = self.inputs["z"]
+        y = self.inputs["y"]
 
-        self.objective["obj"] = x**2 + z2 + y1 + am.exp(-y2)
+        self.objective["obj"] = x**2 + z[1] + y[0] + am.exp(-y[1])
 
 
 class Con1(am.Component):
     def __init__(self):
         super().__init__()
-        self.add_input("y1")
+        self.add_input("y", shape=2)
         self.add_constraint("g1")
 
     def compute(self):
-        self.constraints["g1"] = 3.16 - self.inputs["y1"]
+        self.constraints["g1"] = 3.16 - self.inputs["y"][0]
 
 
 class Con2(am.Component):
     def __init__(self):
         super().__init__()
-        self.add_input("y2")
+        self.add_input("y", shape=2)
         self.add_constraint("g2")
 
     def compute(self):
-        self.constraints["g2"] = self.inputs["y2"] - 24.0
+        self.constraints["g2"] = self.inputs["y"][1] - 24.0
 
 
 parser = argparse.ArgumentParser()
@@ -114,36 +103,28 @@ elif args.link == "component":
     model.link_by_name("disp1", "con2")
 elif args.link == "explicit":
     # Explicit links
-    model.link("disp1.z1", "disp2.z1")
-    model.link("disp1.z2", "disp2.z2")
-    model.link("disp1.y1", "disp2.y1")
-    model.link("disp1.y2", "disp2.y2")
+    model.link("disp1.z", "disp2.z")
+    model.link("disp1.y", "disp2.y")
 
     model.link("disp1.x", "obj.x")
-    model.link("disp1.z2", "obj.z2")
-    model.link("disp1.y1", "obj.y1")
-    model.link("disp1.y2", "obj.y2")
+    model.link("disp1.z", "obj.z")
+    model.link("disp1.y", "obj.y")
 
-    model.link("disp1.y1", "con1.y1")
-    model.link("disp1.y2", "con2.y2")
+    model.link("disp1.y", "con1.y")
+    model.link("disp1.y", "con2.y")
 
 if args.build:
     model.build_module()
 
 model.initialize()
 
-# Create a vector to store the design variables
+# Create a vector to store the solution
 x = model.create_vector()
-
-# Serialize the model
-with open("sellar_model.json", "w") as fp:
-    json.dump(model.serialize(), fp, indent=2)
 
 opt = am.Optimizer(model, x)
 data = opt.optimize(
     {
         "initial_barrier_param": 0.1,
-        "max_line_search_iterations": 10,
         "max_iterations": 500,
     }
 )
