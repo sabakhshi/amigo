@@ -237,7 +237,8 @@ class Optimizer:
 
             # If the line search was not successful, perform feasibility restoration
             if do_feasible_resto:
-                feasible_resto.restoration_phase(solver, evaluator, state)
+                warnings.warn("Feasibility restoration phase not implemented")
+                # feasible_resto.restoration_phase(solver, evaluator, state)
 
         else:
             # The optimization for loop completed normally, so we did not converge
