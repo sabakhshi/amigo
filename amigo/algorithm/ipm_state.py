@@ -29,6 +29,7 @@ class InteriorPointState:
     objective_value: float
     log_barrier_value: float
     con_infeasibility: float
+    objective_current: bool
 
     # Current primal-dual vector
     current: am.OptVector
@@ -68,6 +69,7 @@ class InteriorPointState:
         self.objective_value = 0.0
         self.log_barrier_value = 0.0
         self.con_infeasibility = 0.0
+        self.objective_current = False
 
         self.current = optimizer.create_opt_vector(x)
         self.gradient = problem.create_vector()
@@ -99,8 +101,14 @@ class InteriorPointState:
         """Get the trial primal-dual vector"""
         return self.trial.get_solution()
 
-    def invalidate(self):
-        self.gradient_current = False
-        self.hessian_current = False
-        self.residual_current = False
-        self.step_current = False
+    def invalidate(self, obj=True, grad=True, hess=True, res=True, step=True):
+        if obj:
+            self.objective_current = False
+        if grad:
+            self.gradient_current = False
+        if hess:
+            self.hessian_current = False
+        if res:
+            self.residual_current = False
+        if step:
+            self.step_current = False

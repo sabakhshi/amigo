@@ -221,7 +221,7 @@ def shell_integrand(soln, data=None, geo=None):
     U_shear = 0.5 * ks * G * t * (gs1c * gs1 + gs2c * gs2)
 
     # Drilling penalty
-    # Drilling rotation = theta · n = rx*nx + ry*ny + rz*nz
+    # Drilling rotation = theta · n = rx * nx + ry * ny + rz * nz
     rx = soln["rx"]["value"]
     ry = soln["ry"]["value"]
     rz = soln["rz"]["value"]

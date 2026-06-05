@@ -53,6 +53,9 @@ class ConvergenceCheck:
         # Current iteration counter
         iteration = state.iter
 
+        # Evaluate the residual to compute the KKT error metrics
+        evaluator.evaluate_residual(state)
+
         # Compute NLP error components at mu_target=0
         d_inf_nlp = state.dual_infeas
         p_inf_nlp = state.primal_infeas

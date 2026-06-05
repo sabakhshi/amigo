@@ -111,7 +111,6 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         info = BarrierInfo()
         info.new_barrier = False
         info.mu_old = state.mu
-        info.mu_new = state.mu
 
         # Mode switching before direction
         if not self.free_mode:
@@ -130,6 +129,8 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             else:
                 info.new_barrier = self._enter_monotone_mode(evaluator, state)
 
+        info.mu_new = state.mu
+
         return info
 
     def add_step_correction(self, solver, evaluator, state):
@@ -141,10 +142,11 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             mu_new = max(mu_new, self.mu_min, self._lower_safeguard(state))
             mu_new = min(mu_new, self.mu_max)
 
-            # Set the new barrier parameter and invalidate the residual
+            # Set the new barrier parameter
             state.mu = mu_new
-            state.residual_current = False
-            state.step_current = True
+
+            # Invalidate everything but the gradient, hessian and step
+            state.invalidate(grad=False, hess=False, step=False)
 
         return
 
@@ -158,20 +160,20 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             return
 
         # We had rejected steps, update accordingly
-        # if info.num_search_iters > 1:
-        #     comp, _ = evaluator.evaluate_complementarity(state)
-        #     mu_candidate = self.options["adaptive_mu_monotone_init_factor"] * comp
-        #     mu_candidate = max(mu_candidate, self._lower_safeguard(state), self.mu_min)
-        #     mu_candidate = min(mu_candidate, self.mu_max)
+        if info.num_search_iters > 1:
+            comp, _ = evaluator.evaluate_complementarity(state)
+            mu_candidate = self.options["adaptive_mu_monotone_init_factor"] * comp
+            mu_candidate = max(mu_candidate, self._lower_safeguard(state), self.mu_min)
+            mu_candidate = min(mu_candidate, self.mu_max)
 
-        #     state.mu = mu_candidate
-        #     state.residual_current = False
-        #     state.step_current = False
-        #     self.free_mode = False
+            state.mu = mu_candidate
+            self.free_mode = False
 
-        #     self.monotone_mu = mu_candidate
-        #     if state.comm_rank == 0:
-        #         print(f"  QF -> monotone (step rejected): mu_bar={mu_candidate:.3e}")
+            self.monotone_mu = mu_candidate
+            if state.comm_rank == 0:
+                print(f"  QF -> monotone (step rejected): mu_bar={mu_candidate:.3e}")
+
+            state.invalidate(grad=False, hess=False)
 
     def _initialize_bounds_once(self, evaluator, state):
         """Populate mu bounds and initial-infeasibility refs on first call."""
@@ -196,8 +198,12 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         """Monotone mu reduction when subproblem is solved."""
 
         btf = self.options["barrier_tol_factor"]
-        barrier_err = state.kkt_error
-        if barrier_err > btf * state.mu:
+        # barrier_err = state.kkt_error
+        # if barrier_err > btf * state.mu:
+        #     return False
+
+        relative_tol = self.options["barrier_progress_tol"]
+        if state.residual_norm > relative_tol * state.mu:
             return False
 
         kmu = self.options["mu_linear_decrease_factor"]
@@ -213,8 +219,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
 
         # Invalidate the residual and step since mu has changed
         state.mu = mu_new
-        state.step_current = False
-        state.residual_current = False
+        state.invalidate(grad=False, hess=False)
 
         return True
 
@@ -229,8 +234,12 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
 
         state.mu = mu_new
         self.monotone_mu = mu_new
+        state.invalidate(grad=False, hess=False)
+
         if state.comm_rank == 0:
             print(f"  QF -> monotone: mu_bar={mu_new:.3e} (avg_comp={avg_c:.3e})")
+
+        return True
 
     def _sufficient_progress(self, evaluator, state):
         """Is free mode still making progress w.r.t. the chosen globalization?"""
@@ -244,16 +253,16 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             if len(self.refs) < num_refs_max:
                 return True
 
-            curr = self._kkt_quality()
+            curr = self._kkt_quality(evaluator, state)
             red_fact = self.options["adaptive_mu_kkterror_red_fact"]
             return any(curr <= red_fact * ref for ref in self.refs)
 
         if glob == "obj-constr-filter":
             # Get the constraint gradient at the current point
+            evaluator.evaluate_objective_and_infeasibility(state)
             f_curr = state.objective_value + state.log_barrier_value
-            theta_curr = evaluator.evaluate_infeasibility_from_gradient(
-                state.current, state.gradient
-            )
+            theta_curr = state.con_infeasibility
+
             m1 = min(
                 self.options.get("filter_max_margin", 1.0),
                 max(f_curr, theta_curr, 1e-30),
@@ -272,16 +281,16 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         glob = self.options["adaptive_mu_globalization"]
 
         if glob == "kkt-error":
-            curr = self._kkt_quality()
+            curr = self._kkt_quality(evaluator, state)
             num_refs_max = self.options["adaptive_mu_kkterror_red_iters"]
             if len(self.refs) >= num_refs_max:
                 self.refs.pop(0)
             self.refs.append(curr)
         elif glob == "obj-constr-filter":
+            evaluator.evaluate_objective_and_infeasibility(state)
             f_curr = state.objective_value + state.log_barrier_value
-            theta_curr = evaluator.evaluate_infeasibility_from_gradient(
-                state.current, state.gradient
-            )
+            theta_curr = state.con_infeasibility
+
             self.glob_filter.append((f_curr, theta_curr))
 
     def _lower_safeguard(self, state):
@@ -300,7 +309,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
             safe = min(safe, min(self.refs))
         return safe
 
-    def _kkt_quality(self, state):
+    def _kkt_quality(self, evaluator, state):
         """Scalar KKT quality used for kkt-error globalization."""
         # TODO: move to backend - combine scaling/centrality/balancing into
         # one backend.kkt_quality(options) call.
@@ -312,7 +321,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
 
         centrality = self.options["quality_function_centrality"]
         if centrality != "none" and comp_sq > 0:
-            _, xi = self.optimizer.compute_complementarity(state.current)
+            _, xi = evaluator.evaluate_complementarity(state)
             xi = max(xi, 1e-30)
             c_term = comp_sq * self.sc
             if centrality == "log":
@@ -337,7 +346,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         Returns (sigma, new_mu) or None on degenerate complementarity.
         """
 
-        avg_comp, _ = self.optimizer.compute_complementarity(state.current)
+        avg_comp, _ = evaluator.evaluate_complementarity(state)
         if avg_comp < 1e-30:
             return 1.0, state.mu
         mu_nat = avg_comp

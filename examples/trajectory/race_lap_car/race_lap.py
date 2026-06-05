@@ -405,12 +405,13 @@ def create_racecar_model(module_name="racecar_mod", num_intervals=300, ds=1.0):
     V_init = 20.0
     t_est = s_final / V_init
     t_init = np.linspace(0, t_est, num_intervals + 1)
-    model.set_meta("value", "colloc.q1[:, 0]", t_init[:-1] / scaling["t"])
-    model.set_meta("value", "colloc.q2[:, 0]", t_init[1:] / scaling["t"])
-    model.set_meta("value", "colloc.q1[:, 2]", V_init / scaling["V"])
-    model.set_meta("value", "colloc.q2[:, 2]", V_init / scaling["V"])
-    model.set_meta("value", "colloc.u1[:, 1]", 0.1)
-    model.set_meta("value", "colloc.u2[:, 1]", 0.1)
+    x = model.get_meta_view("value")
+    x["colloc.q1[:, 0]"] = t_init[:-1] / scaling["t"]
+    x["colloc.q2[:, 0]"] = t_init[1:] / scaling["t"]
+    x["colloc.q1[:, 2]"] = V_init / scaling["V"]
+    x["colloc.q2[:, 2]"] = V_init / scaling["V"]
+    x["colloc.u1[:, 1]"] = 0.1
+    x["colloc.u2[:, 1]"] = 0.1
 
     model.set_data("colloc.ds", ds)
 
@@ -437,7 +438,7 @@ options = {
     "max_line_search_iterations": 30,
     "convergence_tolerance": 1e-8,
     "init_least_squares_multipliers": True,
-    "barrier_strategy": "quality_function",
+    "barrier_strategy": "monotone",
     "quality_function_predictor_corrector": False,
     "quality_function_balancing_term": "cubic",
     "adaptive_mu_safeguard_factor": 1e-1,

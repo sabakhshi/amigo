@@ -30,7 +30,27 @@ class Evaluator:
             self.problem.hessian(state.obj_scale, x, state.hessian)
             state.hessian_current = True
 
-    def evaluate_objective_and_barrier_from_point(self, mu, obj_scale, vars):
+    def evaluate_objective_and_infeasibility(self, state):
+        """Evaluate the objective, barrier and infeasibility at the current point"""
+        if not state.objective_current:
+            if not state.gradient_current:
+                self.evaluate_gradient(state)
+
+            obj, barrier, infeas = self.evaluate_objective_and_infeasibility_from_point(
+                state.mu, state.obj_scale, state.current, state.gradient
+            )
+
+            state.objective_value = obj
+            state.log_barrier_value = barrier
+            state.con_infeasibility = infeas
+
+            # Are the objective, barrier and infeasibility current
+            state.objective_current = True
+
+    def evaluate_objective_and_infeasibility_from_point(
+        self, mu, obj_scale, vars, grad
+    ):
+        """Evaluate the objective, barrier and infeasibility at the trial point"""
         # Zero dual, evaluate L(x,0) = f(x), restore
         con_indices = self.problem.get_constraint_indices()
 
@@ -47,43 +67,23 @@ class Evaluator:
 
         barrier = self.optimizer.compute_barrier_log_sum(mu, vars)
 
-        return fobj, barrier
+        # Evaluate the gradient
+        infeas = self.optimizer.compute_constraint_violation_1norm(vars, grad)
 
-    def evaluate_objective_and_barrier(self, state):
-        """Evaluate the objective and log-barrier terms at the current point"""
-        fobj, barrier = self.evaluate_objective_and_barrier_from_point(
-            state.mu, state.obj_scale, state.current
-        )
-        state.objective_value = fobj
-        state.log_barrier_value = barrier
-        return
+        return fobj, barrier, infeas
 
     def evaluate_directional_derivative(self, state):
-        if not state.gradient_current:
-            self.evaluate_gradient(state)
+        """Evaluate the directional derivative at the candidate point"""
+        if not state.residual_current:
+            self.evaluate_residual(state)
         if not state.step_current:
             raise ValueError("Step not current at this point")
 
         update = state.step.get_solution()
-        return self.optimizer.compute_barrier_dphi_direct(
-            state.mu, state.current, state.gradient, update
+        deriv = self.optimizer.compute_barrier_dphi(
+            state.mu, state.current, state.step, state.residual, update, state.diagonal
         )
-
-    def evaluate_infeasibility_from_gradient(self, vars, grad):
-        return self.optimizer.compute_constraint_violation_1norm(vars, grad)
-        # con_indices = self.problem.get_constraint_indices()
-        # grad.get_values_at(con_indices, self.temp_con)
-        # return self.problem.abssum(self.temp_con)
-
-    def evaluate_infeasibility(self, state):
-        if not state.gradient_current:
-            self.evaluate_gradient(state)
-
-        infeas = self.evaluate_infeasibility_from_gradient(
-            state.current, state.gradient
-        )
-        state.con_infeasibility = infeas
-        return
+        return deriv
 
     def evaluate_residual(self, state):
         if not state.gradient_current:
@@ -149,9 +149,6 @@ class Evaluator:
             s_d = 1.0
         else:
             s_d = max(s_max, (y_asum + z_asum) / n_all) / s_max
-
-        s_c = 1.0
-        s_d = 1.0
 
         return s_d, s_c
 
