@@ -37,7 +37,7 @@ class SerialVecBackend {
   void fill_at(int n, const int d_idx[], T value) {}
   void add_scalar_at(int n, const int d_idx[], T scalar) {}
   void scale_at(int n, const int d_idx[], T scalar) {}
-  void axpy_at(int n, const int d_idx[], const T d_x[]) {}
+  void axpy_at(int n, const int d_idx[], T alpha, const T d_x[]) {}
   void get_values_at(int n, const int d_idx[], T d_vals[]) {}
   void set_values_at(int n, const int d_idx[], const T d_vals[]) {}
 
@@ -289,7 +289,7 @@ class Vector {
         array[idx[i]] += alpha * x.array[idx[i]];
       }
     } else {
-      backend.axpy_at(alpha, idx, x->get_device_array());
+      backend.axpy_at(nentries, idx, alpha, x->get_device_array());
     }
   }
 
