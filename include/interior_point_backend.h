@@ -494,66 +494,97 @@ void relax_bounds(OptProblemInfo<T>& info, T* lbx_buf, T* ubx_buf,
   }
 }
 
-// Template delarations
+// Template declarations for CUDA backend (defined in src/interior_point_optimizer.cu)
+//
+// Each *_cuda function mirrors the corresponding host function above and
+// performs the same computation on the device.  Defaults match the host
+// versions so callers do not need to pass extra arguments at the call site.
 #ifdef AMIGO_USE_CUDA
-template <typename T>
-void set_dual_values_cuda(const OptProblemInfo<T>& info, const T value, T* d_x,
-                          cudaStream_t stream = 0);
 
+// Project all primals into the strict interior of their bounds.
 template <typename T>
-void set_primal_values_cuda(const OptProblemInfo<T>& info, const T value,
-                            T* d_x, cudaStream_t stream = 0);
+void project_primals_into_interior_cuda(const OptProblemInfo<T>& info, T* xlam,
+                                        T kappa1 = 1e-2, T kappa2 = 1e-2,
+                                        cudaStream_t stream = 0);
 
+// Initialize bound duals (zl, zu) for finite bounds.
 template <typename T>
-void copy_duals_cuda(const OptProblemInfo<T>& info, const T* d_src, T* d_dest,
-                     cudaStream_t stream = 0);
+void initialize_bound_duals_cuda(T mu, const OptProblemInfo<T>& info,
+                                 const T* xlam, T* zl, T* zu,
+                                 cudaStream_t stream = 0);
 
+// Augmented system RHS via 8-block to 4-block condensation.
 template <typename T>
-void copy_primals_cuda(const OptProblemInfo<T>& info, const T* d_src, T* d_dest,
-                       cudaStream_t stream = 0);
+void compute_residual_cuda(T mu, const OptProblemInfo<T>& info,
+                           OptState<const T>& current, const T* grad, T* res,
+                           cudaStream_t stream = 0);
 
+// Barrier diagonal Sigma for the augmented system.
 template <typename T>
-void initialize_multipliers_and_slacks_cuda(T barrier_param,
-                                            const OptProblemInfo<T>& info,
-                                            const T* d_g, OptState<T>& pt,
-                                            cudaStream_t stream = 0);
+void compute_diagonal_cuda(const OptProblemInfo<T>& info,
+                           OptState<const T>& current, T* diag,
+                           cudaStream_t stream = 0);
 
+// Bound dual back-substitution.
 template <typename T>
-void compute_residual_cuda(T barrier_param, T gamma,
-                           const OptProblemInfo<T>& info, OptState<const T>& pt,
-                           const T* g, T* r, cudaStream_t stream = 0);
+void compute_bound_dual_step_cuda(T mu, const OptProblemInfo<T>& info,
+                                  OptState<const T>& current, const T* px,
+                                  T* dzl, T* dzu, cudaStream_t stream = 0);
 
+// Fraction-to-the-boundary rule.
 template <typename T>
-void compute_update_cuda(T barrier_param, T gamma,
-                         const OptProblemInfo<T>& info, OptState<const T>& pt,
-                         OptState<T>& up, cudaStream_t stream = 0);
+void compute_max_step_cuda(T tau, const OptProblemInfo<T>& info,
+                           OptState<const T>& current, OptState<const T>& step,
+                           T& ax, int& xi, T& az, int& zi,
+                           cudaStream_t stream = 0);
 
+// Apply the trial primal-dual-bound step.
 template <typename T>
-void compute_diagonal_cuda(const OptProblemInfo<T>& info, OptState<const T>& pt,
-                           T* diag, cudaStream_t stream = 0);
+void apply_step_cuda(T ax, T az, const OptProblemInfo<T>& info,
+                     OptState<const T>& current, OptState<const T>& step,
+                     OptState<T>& result, cudaStream_t stream = 0);
 
+// Sum / count / min of complementarity pairs (gap_* * z_*).
 template <typename T>
-void compute_max_step_cuda(const T tau, const OptProblemInfo<T>& info,
-                           OptState<const T>& pt, OptState<const T>& up,
-                           T& alpha_x_max, int& x_index, T& alpha_z_max,
-                           int& z_index, cudaStream_t stream = 0);
+void compute_complementarity_cuda(const OptProblemInfo<T>& info,
+                                  OptState<const T>& current, T partial_sum[],
+                                  T& local_min, cudaStream_t stream = 0);
 
+// Optimality error E_mu (infinity norms over dual / primal / comp blocks).
 template <typename T>
-void apply_step_update_cuda(const T alpha_x, const T alpha_z,
-                            const OptProblemInfo<T>& info,
-                            OptState<const T>& pt, OptState<const T>& up,
-                            OptState<T>& tmp, cudaStream_t stream = 0);
+void compute_kkt_error_cuda(T mu, const OptProblemInfo<T>& info,
+                            OptState<const T>& current, const T* grad, T& dual,
+                            T& primal, T& comp, cudaStream_t stream = 0);
 
+// Log-barrier value: -mu * sum_i (ln(x_i - lb_i) + ln(ub_i - x_i)).
 template <typename T>
-void compute_affine_start_point_cuda(T beta_min, const OptProblemInfo<T>& info,
-                                     OptState<const T>& pt,
-                                     OptState<const T>& up, OptState<T>& tmp,
-                                     cudaStream_t stream = 0);
+T compute_log_barrier_cuda(T mu, const OptProblemInfo<T>& info,
+                           OptState<const T>& current,
+                           cudaStream_t stream = 0);
 
+// Directional derivative of the log-barrier along the search direction.
 template <typename T>
-void compute_complementarity_pairs_cuda(const OptProblemInfo<T>& info,
-                                        const OptState<const T>& pt,
-                                        T partial_sum[], T& local_min);
+T compute_log_barrier_derivative_cuda(T mu, const OptProblemInfo<T>& info,
+                                      OptState<const T>& current,
+                                      OptState<const T>& step,
+                                      cudaStream_t stream = 0);
+
+// Sum of squared complementarity products.
+template <typename T>
+T compute_sum_squared_complementarity_cuda(T mu, const OptProblemInfo<T>& info,
+                                           OptState<const T>& current,
+                                           cudaStream_t stream = 0);
+
+// l1 infeasibility of the equality block (uses constraint_indices).
+template <typename T>
+T compute_infeasibility_cuda(const OptProblemInfo<T>& info, const T* grad,
+                             cudaStream_t stream = 0);
+
+// Dual residual r_d[idx] = grad[idx] - zl[i] + zu[i].
+template <typename T>
+void compute_dual_residual_cuda(const OptProblemInfo<T>& info,
+                                OptState<const T>& current, const T* grad,
+                                T* out, int size, cudaStream_t stream = 0);
 #endif
 
 }  // namespace detail

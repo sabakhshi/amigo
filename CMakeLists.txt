@@ -246,7 +246,7 @@ if(AMIGO_ENABLE_CUDA)
   add_library(backend 
     src/csr_factor_cuda.cu
     src/csr_matrix_backend.cu
-    src/optimizer_backend.cu
+    src/interior_point_optimizer.cu
     src/vector_distribute.cu)
   target_compile_options(backend PRIVATE
     $<$<CONFIG:Debug>:-O0 -g>
