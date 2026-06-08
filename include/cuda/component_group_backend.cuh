@@ -10,6 +10,11 @@ namespace amigo {
 
 namespace detail {
 
+// All __device__ / __global__ code below is only compiled by nvcc.
+// mpicxx sees only the CudaGroupBackend class declaration (which is
+// guarded by AMIGO_USE_CUDA at the include site).
+#ifdef __CUDACC__
+
 template <typename T, class Input, class Data, class Component, class... Remain>
 AMIGO_DEVICE void add_gradient(T alpha, Data& data, Input& input, Input& grad) {
   if constexpr (!Component::is_compute_empty) {
@@ -121,6 +126,8 @@ AMIGO_KERNEL void hessian_kernel_atomic(int num_elements, T alpha,
 
 }  // namespace detail
 
+#endif  // __CUDACC__
+
 template <typename T, int ncomp, class Input, int ndata, class Data,
           class... Components>
 class CudaGroupBackend {
@@ -198,6 +205,7 @@ class CudaGroupBackend {
                            const IndexLayout<ncomp>& layout,
                            const Vector<T>& data_vec, const Vector<T>& vec,
                            Vector<T>& res) const {
+#ifdef __CUDACC__
     const int TPB = 32;
     int num_elements;
     const int* data_indices;
@@ -215,6 +223,7 @@ class CudaGroupBackend {
     detail::gradient_kernel_atomic<T, ncomp, Input, ndata, Data, Components...>
         <<<grid, block>>>(num_elements, alpha, data_indices, vec_indices,
                           data_values, vec_values, res_values);
+#endif
   }
 
   void add_hessian_product_kernel(T alpha,
@@ -223,6 +232,7 @@ class CudaGroupBackend {
                                   const Vector<T>& data_vec,
                                   const Vector<T>& vec, const Vector<T>& dir,
                                   Vector<T>& res) const {
+#ifdef __CUDACC__
     const int TPB = 32;
     int num_elements;
     const int* data_indices;
@@ -242,6 +252,7 @@ class CudaGroupBackend {
                                           Components...>
         <<<grid, block>>>(num_elements, alpha, data_indices, vec_indices,
                           data_values, vec_values, dir_values, res_values);
+#endif
   }
 
   // Need to add the hessian...
@@ -249,6 +260,7 @@ class CudaGroupBackend {
                           const IndexLayout<ncomp>& layout,
                           const Vector<T>& data_vec, const Vector<T>& vec,
                           const NodeOwners& owners, CSRMat<T>& mat) const {
+#ifdef __CUDACC__
     const int TPB = 32;
     int num_elements;
     const int* data_indices;
@@ -268,6 +280,7 @@ class CudaGroupBackend {
     detail::hessian_kernel_atomic<T, ncomp, Input, ndata, Data, Components...>
         <<<grid, block>>>(num_elements, alpha, data_indices, vec_indices,
                           d_hess_pos, data_values, vec_values, csr_data);
+#endif
   }
 
   void add_grad_jac_product_wrt_data_kernel(
