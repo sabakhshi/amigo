@@ -229,7 +229,7 @@ class InertiaCorrector:
 
         self._test_status = self._NO_TEST
 
-    def _consider_new_system(self):
+    def _consider_new_system(self, state):
         """Prepare for a new KKT system.
 
         Save last perturbation, reset current to zero. Pre-apply delta_c
@@ -255,7 +255,7 @@ class InertiaCorrector:
 
         # Pre-apply delta_c if Jacobian structurally degenerate
         if self._jac_degen == self._DEGENERATE:
-            self._delta_c_curr = self._delta_cd()
+            self._delta_c_curr = self._delta_cd(state)
         else:
             self._delta_c_curr = 0.0
 
@@ -318,7 +318,7 @@ class InertiaCorrector:
             return True
 
         # Prepare new system: save last perturbation, reset current
-        self._consider_new_system()
+        self._consider_new_system(state)
 
         # Sync pivot tolerance to solver
         solver.set_pivot_tolerance(self._pivtol)

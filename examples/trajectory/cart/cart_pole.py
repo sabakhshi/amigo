@@ -243,7 +243,7 @@ parser.add_argument(
     "--solver",
     dest="solver",
     choices=["amigo", "mumps", "cuda"],
-    default="mumps",
+    default="amigo",
     help="Solver type",
 )
 

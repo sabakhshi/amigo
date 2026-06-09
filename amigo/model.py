@@ -21,6 +21,7 @@ from .amigo import (
     CSRMat,
     ExternalComponentGroup,
     SlackComponent,
+    MemoryLocation,
 )
 from .cmake_helper import get_cmake_dir
 from .component import Component
@@ -1057,9 +1058,9 @@ class Model:
         """Create a new data vector"""
         return ModelVector(self, self.problem.create_data_vector(), kind="data")
 
-    def create_matrix(self):
+    def create_matrix(self, loc=MemoryLocation.HOST_AND_DEVICE):
         """Create a new Hessian matrix"""
-        return self.problem.create_matrix()
+        return self.problem.create_matrix(loc)
 
     def eval_gradient(self, x: ModelVector, g: ModelVector, alpha: float = 1.0):
         """Evaluate the gradient of the model"""
@@ -1281,7 +1282,7 @@ amigo_add_python_module(
         amigo_cmake_dir = get_cmake_dir()
 
         # Python include directory
-        python_include_dir = sysconfig.get_path('include')
+        python_include_dir = sysconfig.get_path("include")
 
         # Cmake command
         cmake_cmd = [

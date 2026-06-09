@@ -37,7 +37,10 @@ AMIGO_KERNEL void vec_copy_at_kernel(int n, const int* __restrict__ d_idx,
                                      const T* __restrict__ d_src,
                                      T* __restrict__ d_ptr) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) { int idx = d_idx[i]; d_ptr[idx] = d_src[idx]; }
+  if (i < n) {
+    int idx = d_idx[i];
+    d_ptr[idx] = d_src[idx];
+  }
 }
 
 template <typename T>
@@ -66,7 +69,10 @@ AMIGO_KERNEL void vec_axpy_at_kernel(int n, const int* __restrict__ d_idx,
                                      T alpha, const T* __restrict__ d_x,
                                      T* __restrict__ d_ptr) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) { int idx = d_idx[i]; d_ptr[idx] += alpha * d_x[idx]; }
+  if (i < n) {
+    int idx = d_idx[i];
+    d_ptr[idx] += alpha * d_x[idx];
+  }
 }
 
 template <typename T>
@@ -93,7 +99,7 @@ template <typename T>
 AMIGO_KERNEL void vec_maxabs_kernel(int n, const T* __restrict__ d_ptr,
                                     T* d_max, int* d_idx_out) {
   extern __shared__ unsigned char smem[];
-  T*   s_val = reinterpret_cast<T*>(smem);
+  T* s_val = reinterpret_cast<T*>(smem);
   int* s_idx = reinterpret_cast<int*>(s_val + blockDim.x);
 
   int tid = threadIdx.x;
@@ -102,7 +108,10 @@ AMIGO_KERNEL void vec_maxabs_kernel(int n, const T* __restrict__ d_ptr,
 
   for (int i = tid; i < n; i += blockDim.x) {
     T v = abs_value(d_ptr[i]);
-    if (v > local_val) { local_val = v; local_idx = i; }
+    if (v > local_val) {
+      local_val = v;
+      local_idx = i;
+    }
   }
 
   s_val[tid] = local_val;
@@ -117,7 +126,10 @@ AMIGO_KERNEL void vec_maxabs_kernel(int n, const T* __restrict__ d_ptr,
     __syncthreads();
   }
 
-  if (tid == 0) { *d_max = s_val[0]; *d_idx_out = s_idx[0]; }
+  if (tid == 0) {
+    *d_max = s_val[0];
+    *d_idx_out = s_idx[0];
+  }
 }
 
 template <typename T>
@@ -201,7 +213,8 @@ void vec_set_values_at(int n, const int* d_idx, const T* d_vals, T* d_ptr) {
 
 template <typename T>
 T vec_maxabs(int n, const T* d_ptr, int& index) {
-  T* d_max; int* d_idx_out;
+  T* d_max;
+  int* d_idx_out;
   AMIGO_CHECK_CUDA(cudaMalloc(&d_max, sizeof(T)));
   AMIGO_CHECK_CUDA(cudaMalloc(&d_idx_out, sizeof(int)));
 
@@ -209,9 +222,12 @@ T vec_maxabs(int n, const T* d_ptr, int& index) {
   vec_maxabs_kernel<T><<<1, VEC_TPB, shmem>>>(n, d_ptr, d_max, d_idx_out);
 
   T host_max = T(0);
-  AMIGO_CHECK_CUDA(cudaMemcpy(&host_max, d_max, sizeof(T), cudaMemcpyDeviceToHost));
-  AMIGO_CHECK_CUDA(cudaMemcpy(&index, d_idx_out, sizeof(int), cudaMemcpyDeviceToHost));
-  cudaFree(d_max); cudaFree(d_idx_out);
+  AMIGO_CHECK_CUDA(
+      cudaMemcpy(&host_max, d_max, sizeof(T), cudaMemcpyDeviceToHost));
+  AMIGO_CHECK_CUDA(
+      cudaMemcpy(&index, d_idx_out, sizeof(int), cudaMemcpyDeviceToHost));
+  cudaFree(d_max);
+  cudaFree(d_idx_out);
   return host_max;
 }
 
@@ -224,7 +240,8 @@ T vec_abssum(int n, const T* d_ptr) {
   vec_abssum_kernel<T><<<1, VEC_TPB, shmem>>>(n, d_ptr, d_out);
 
   T host_out = T(0);
-  AMIGO_CHECK_CUDA(cudaMemcpy(&host_out, d_out, sizeof(T), cudaMemcpyDeviceToHost));
+  AMIGO_CHECK_CUDA(
+      cudaMemcpy(&host_out, d_out, sizeof(T), cudaMemcpyDeviceToHost));
   cudaFree(d_out);
   return host_out;
 }
@@ -233,19 +250,20 @@ T vec_abssum(int n, const T* d_ptr) {
 // Explicit instantiations for float and double
 // -------------------------------------------------------------------------
 
-#define INSTANTIATE(T) \
-  template void vec_fill<T>(int, T, T*); \
-  template void vec_add_scalar<T>(int, T, T*); \
-  template void vec_copy_at<T>(int, const int*, const T*, T*); \
-  template void vec_fill_at<T>(int, const int*, T, T*); \
-  template void vec_add_scalar_at<T>(int, const int*, T, T*); \
-  template void vec_scale_at<T>(int, const int*, T, T*); \
-  template void vec_axpy_at<T>(int, const int*, T, const T*, T*); \
+#define INSTANTIATE(T)                                               \
+  template void vec_fill<T>(int, T, T*);                             \
+  template void vec_add_scalar<T>(int, T, T*);                       \
+  template void vec_copy_at<T>(int, const int*, const T*, T*);       \
+  template void vec_fill_at<T>(int, const int*, T, T*);              \
+  template void vec_add_scalar_at<T>(int, const int*, T, T*);        \
+  template void vec_scale_at<T>(int, const int*, T, T*);             \
+  template void vec_axpy_at<T>(int, const int*, T, const T*, T*);    \
   template void vec_get_values_at<T>(int, const int*, const T*, T*); \
   template void vec_set_values_at<T>(int, const int*, const T*, T*); \
-  template T    vec_maxabs<T>(int, const T*, int&); \
-  template T    vec_abssum<T>(int, const T*);
+  template T vec_maxabs<T>(int, const T*, int&);                     \
+  template T vec_abssum<T>(int, const T*);
 
+INSTANTIATE(int)
 INSTANTIATE(float)
 INSTANTIATE(double)
 

@@ -180,6 +180,8 @@ class CudaGroupBackend {
 
           if (it != end && *it == columns[k]) {
             hess_pos[ncomp * (ncomp * i + j) + k] = it - cols;
+          } else {
+            hess_pos[ncomp * (ncomp * i + j) + k] = -1;
           }
         }
       }

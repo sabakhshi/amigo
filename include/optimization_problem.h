@@ -804,7 +804,9 @@ class OptimizationProblem {
   std::shared_ptr<CSRMat<T>> create_matrix(
       MemoryLocation mem_loc = MemoryLocation::HOST_AND_DEVICE) {
     if (mat) {
-      return mat->duplicate();
+      std::shared_ptr<CSRMat<T>> dup = mat->duplicate();
+      dup->copy_pattern_host_to_device();
+      return dup;
     } else {
       std::vector<int> intervals;
       auto element_nodes = get_element_nodes(intervals);
@@ -906,6 +908,9 @@ class OptimizationProblem {
       for (size_t i = 0; i < components.size(); i++) {
         components[i]->initialize_hessian_pattern(*var_owners, *mat);
       }
+
+      // Copy the pattern to the device
+      mat->copy_pattern_host_to_device();
 
       return mat;
     }
