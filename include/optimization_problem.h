@@ -804,7 +804,9 @@ class OptimizationProblem {
   std::shared_ptr<CSRMat<T>> create_matrix(
       MemoryLocation mem_loc = MemoryLocation::HOST_AND_DEVICE) {
     if (mat) {
-      return mat->duplicate();
+      std::shared_ptr<CSRMat<T>> dup = mat->duplicate();
+      dup->copy_pattern_host_to_device();
+      return dup;
     } else {
       std::vector<int> intervals;
       auto element_nodes = get_element_nodes(intervals);
@@ -907,6 +909,9 @@ class OptimizationProblem {
         components[i]->initialize_hessian_pattern(*var_owners, *mat);
       }
 
+      // Copy the pattern to the device
+      mat->copy_pattern_host_to_device();
+
       return mat;
     }
   }
@@ -968,9 +973,10 @@ class OptimizationProblem {
    * @param alpha Scalar multiplier for the objective function
    * @param x The design variable vector
    * @param g The output gradient vector
+   * @param zero_fixed_rows Zero rows associated with fixed variables
    */
   void gradient(T alpha, const std::shared_ptr<Vector<T>> x,
-                std::shared_ptr<Vector<T>> g) {
+                std::shared_ptr<Vector<T>> g, bool zero_fixed_rows) {
     var_dist.begin_forward(x, var_ctx);
     var_dist.end_forward(x, var_ctx);
 
@@ -986,7 +992,7 @@ class OptimizationProblem {
     var_dist.begin_reverse_add(g, var_ctx);
     var_dist.end_reverse_add(g, var_ctx);
 
-    if (fixed) {
+    if (fixed && zero_fixed_rows) {
       fixed->zero_rows<policy>(g);
     }
   }
@@ -998,10 +1004,12 @@ class OptimizationProblem {
    * @param x The design variable vector
    * @param p The product direction
    * @param h The output Hessian-vector product
+   * @param zero_fixed_rows Zero rows associated with fixed variables
    */
   void hessian_product(T alpha, const std::shared_ptr<Vector<T>> x,
                        const std::shared_ptr<Vector<T>> p,
-                       std::shared_ptr<Vector<T>> h) {
+                       std::shared_ptr<Vector<T>> h,
+                       bool zero_fixed_rows = true) {
     var_dist.begin_forward(x, var_ctx);
     var_dist.end_forward(x, var_ctx);
 
@@ -1016,7 +1024,7 @@ class OptimizationProblem {
     var_dist.begin_reverse_add(h, var_ctx);
     var_dist.end_reverse_add(h, var_ctx);
 
-    if (fixed) {
+    if (fixed && zero_fixed_rows) {
       fixed->zero_rows<policy>(h);
     }
   }
@@ -1027,9 +1035,12 @@ class OptimizationProblem {
    * @param alpha Scalar multiplier for the objective function
    * @param x The design variable values
    * @param mat The full Hessian matrix
+   * @param zero_fixed_rows_and_columns Zero the rows and columns associated
+   * with fixed variables
    */
   void hessian(T alpha, const std::shared_ptr<Vector<T>> x,
-               std::shared_ptr<CSRMat<T>> matrix) {
+               std::shared_ptr<CSRMat<T>> matrix,
+               bool zero_fixed_rows_and_columns = true) {
     var_dist.begin_forward(x, var_ctx);
     var_dist.end_forward(x, var_ctx);
 
@@ -1042,7 +1053,7 @@ class OptimizationProblem {
     mat_dist->begin_assembly(matrix, mat_dist_ctx);
     mat_dist->end_assembly(matrix, mat_dist_ctx);
 
-    if (fixed) {
+    if (fixed && zero_fixed_rows_and_columns) {
       fixed->zero_rows_and_columns<policy>(matrix);
     }
   }

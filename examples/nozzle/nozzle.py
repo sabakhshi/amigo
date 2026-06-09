@@ -751,6 +751,9 @@ opt_history["num_cells"] = args.num_cells
 opt_history["num_variables"] = model.num_variables
 opt_history["num_constraints"] = model.num_constraints
 
+# Copy the solution to the host
+x.copy_device_to_host()
+
 with open(args.opt_filename, "w") as fp:
     json.dump(opt_history, fp, indent=2, default=lambda obj: "")
 

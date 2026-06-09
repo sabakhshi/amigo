@@ -20,7 +20,7 @@ template <typename T>
 void fill_values_cuda(int n, T value, T* array, cudaStream_t stream) {
   constexpr int TPB = 256;
 
-  int grid = (nrows + TPB - 1) / TPB;
+  int grid = (n + TPB - 1) / TPB;
   fill_values<T><<<grid, TPB, 0, stream>>>(n, value, array);
 }
 
@@ -37,7 +37,7 @@ template <typename T>
 void add_scalar_cuda(int n, T value, T* array, cudaStream_t stream) {
   constexpr int TPB = 256;
 
-  int grid = (nrows + TPB - 1) / TPB;
+  int grid = (n + TPB - 1) / TPB;
   fill_values<T><<<grid, TPB, 0, stream>>>(n, value, array);
 }
 

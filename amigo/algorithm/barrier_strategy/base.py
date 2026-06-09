@@ -42,10 +42,4 @@ class BarrierStrategy(ABC):
 
         Default behavior is to adjust the barrier parameter if small steps are taken
         """
-        if state.iter > 0 and info.alpha_primal < 1e-10:
-            initial_barrier = self.options["initial_barrier_param"]
-            state.mu = min(10.0 * state.mu, initial_barrier)
-
-            # Invalidate the residual and step
-            state.residual_current = False
-            state.step_current = False
+        pass

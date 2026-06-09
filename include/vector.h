@@ -21,13 +21,26 @@ class SerialVecBackend {
   void allocate(int size_) {}
   void copy_host_to_device(T* h_dest) {}
   void copy_device_to_host(T* h_src) {}
+
   void copy(const T* d_src) {}
-  T dot(const T* d_ptr) const { return T(0); }
-  void axpy(T alpha, const T* d_x) const {}
-  void scale(T alpha) {}
   void zero() {}
-  void fill(T value) {}
-  void set_values(int n, const int d_idx[], T value) {}
+  void fill(T scalar) {}
+  void add_scalar(T scalar) {}
+  void scale(T alpha) {}
+  void axpy(T alpha, const T* d_x) {}
+
+  T dot(const T* d_src) const { return T(0); }
+  T maxabs(int& index) { return T(0); }
+  T abssum() { return T(0); }
+
+  void copy_at(int n, const int d_idx[], const T d_src[]) {}
+  void fill_at(int n, const int d_idx[], T value) {}
+  void add_scalar_at(int n, const int d_idx[], T scalar) {}
+  void scale_at(int n, const int d_idx[], T scalar) {}
+  void axpy_at(int n, const int d_idx[], T alpha, const T d_x[]) {}
+  void get_values_at(int n, const int d_idx[], T d_vals[]) {}
+  void set_values_at(int n, const int d_idx[], const T d_vals[]) {}
+
   T* get_device_ptr() { return nullptr; }
   const T* get_device_ptr() const { return nullptr; }
 };
@@ -107,7 +120,7 @@ class Vector {
 
   void zero() {
     if (array) {
-      std::fill(array, array + size, T(0.0));
+      std::fill(array, array + size, T(0));
     }
     backend.zero();
   }
@@ -219,7 +232,7 @@ class Vector {
         array[idx[i]] = src->array[idx[i]];
       }
     } else {
-      backend.copy_at(nentries, idx, src.get_device_array());
+      backend.copy_at(nentries, idx, src->get_device_array());
     }
   }
 
@@ -258,25 +271,26 @@ class Vector {
     if constexpr (policy == ExecPolicy::SERIAL ||
                   policy == ExecPolicy::OPENMP) {
       for (int i = 0; i < size; i++) {
-        array[idx[i]] += alpha;
+        array[idx[i]] *= alpha;
       }
     } else {
-      backend.scale_at(alpha);
+      backend.scale_at(nentries, idx, alpha);
     }
   }
 
   template <ExecPolicy policy>
   void axpy_at(std::shared_ptr<Vector<int>> indices, T alpha,
-               const Vector<T>& x) {
+               const std::shared_ptr<Vector<T>> x) {
     int nentries = indices->get_local_size();
     const int* idx = indices->template get_array<policy>();
+    const T* x_array = x->template get_array<policy>();
     if constexpr (policy == ExecPolicy::SERIAL ||
                   policy == ExecPolicy::OPENMP) {
       for (int i = 0; i < nentries; i++) {
-        array[idx[i]] += alpha * x.array[idx[i]];
+        array[idx[i]] += alpha * x_array[idx[i]];
       }
     } else {
-      backend.axpy_at(alpha, x.get_device_array());
+      backend.axpy_at(nentries, idx, alpha, x_array);
     }
   }
 

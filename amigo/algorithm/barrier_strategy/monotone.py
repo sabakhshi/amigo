@@ -12,13 +12,12 @@ class MonotoneBarrierStrategy(BarrierStrategy):
 
     def update_barrier(self, evaluator, state):
         info = BarrierInfo()
-
-        opt_tol = self.options["convergence_tolerance"]
         relative_tol = self.options["barrier_progress_tol"]
-        frac = self.options["monotone_barrier_fraction"]
 
-        if state.residual_norm < relative_tol * state.mu:
-            mu_new = max(state.mu * frac, frac * opt_tol)
+        if state.kkt_error < relative_tol * state.mu:
+            opt_tol = self.options["convergence_tolerance"]
+            frac = self.options["monotone_barrier_fraction"]
+            mu_new = max(frac * state.mu, frac * opt_tol)
 
             info.new_barrier = True
             info.mu_old = state.mu
@@ -27,7 +26,8 @@ class MonotoneBarrierStrategy(BarrierStrategy):
             # Update the barrier parameter. Invalidate the residuals and the step
             # (if any) because the barrier has changed
             state.mu = mu_new
-            state.residual_current = False
-            state.step_current = False
+
+            # Only the gradient and hessian retain their status
+            state.invalidate(grad=False, hess=False)
 
         return info

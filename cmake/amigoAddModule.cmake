@@ -34,12 +34,12 @@ function(amigo_add_python_module)
 
   # CUDA support, if the installed Amigo package was built with CUDA
   if(AMIGO_ENABLE_CUDA)
-    enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
-
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND DEFINED AMIGO_CUDA_ARCHITECTURES)
+    if(DEFINED AMIGO_CUDA_ARCHITECTURES AND NOT "${AMIGO_CUDA_ARCHITECTURES}" STREQUAL "")
       set(CMAKE_CUDA_ARCHITECTURES "${AMIGO_CUDA_ARCHITECTURES}")
     endif()
+
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
   endif()
 
   # Optional OpenMP if Amigo was built with it
@@ -53,6 +53,10 @@ function(amigo_add_python_module)
   find_package(BLAS REQUIRED)
   find_package(LAPACK REQUIRED)
   find_package(MPI REQUIRED COMPONENTS CXX)
+
+  if(AMIGO_ENABLE_CUDA)
+    set_source_files_properties(${AMIGO_SOURCES} PROPERTIES LANGUAGE CUDA)
+  endif()
 
   # ------------------------------------------------------------
   # Build the Python module
@@ -93,9 +97,5 @@ function(amigo_add_python_module)
   # transitively by amigo::headers, but linking again here is harmless.
   if(AMIGO_ENABLE_OPENMP AND TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(${AMIGO_NAME} PRIVATE OpenMP::OpenMP_CXX)
-  endif()
-
-  if(AMIGO_ENABLE_CUDA)
-    set_source_files_properties(${AMIGO_NAME} PROPERTIES LANGUAGE CUDA)
   endif()
 endfunction()

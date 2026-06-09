@@ -35,6 +35,7 @@ from .amigo import (
     SolverType,
     OrderingType,
     MemoryLocation,
+    OptVarType,
 )
 from .component import Component
 from .model import Model

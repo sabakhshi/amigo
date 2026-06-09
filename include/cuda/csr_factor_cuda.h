@@ -21,6 +21,8 @@ class CSRMatFactorCuda {
   void solve(std::shared_ptr<Vector<double>> b,
              std::shared_ptr<Vector<double>> x);
 
+  void get_inertia(int* pos, int* neg);
+
  private:
   // Pointer to the CSR matrix
   std::shared_ptr<CSRMat<double>> mat;

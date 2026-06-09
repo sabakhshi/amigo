@@ -285,6 +285,13 @@ if __name__ == "__main__":
         default=False,
         help="Use single mesh instead of mesh refinement",
     )
+    parser.add_argument(
+        "--solver",
+        dest="solver",
+        choices=["amigo", "mumps", "cuda"],
+        default="amigo",
+        help="Solver type",
+    )
     args = parser.parse_args()
 
     # Set the scaling
@@ -292,12 +299,9 @@ if __name__ == "__main__":
     model = create_hang_glide_model(scaling, num_time_steps=num_time_steps)
 
     if args.build:
-        from pathlib import Path
+        model.build_module()
 
-        source_dir = Path(__file__).resolve().parent
-        model.build_module(source_dir=source_dir)
-
-    model.initialize(order_type=am.OrderingType.NESTED_DISSECTION)
+    model.initialize()
 
     with open("glider_model.json", "w") as fp:
         json.dump(model.serialize(), fp, indent=2)
@@ -344,6 +348,7 @@ if __name__ == "__main__":
     opt = am.Optimizer(model, x)
     data = opt.optimize(
         {
+            "solver": args.solver,
             "barrier_strategy": "monotone",
             "initial_barrier_param": 0.1,
             "max_line_search_iterations": 30,
@@ -358,6 +363,8 @@ if __name__ == "__main__":
             "fraction_to_boundary": 0.995,
         }
     )
+
+    x.copy_device_to_host()
 
     with open("hang_glider_opt_data.json", "w") as fp:
         json.dump(data, fp, indent=2)

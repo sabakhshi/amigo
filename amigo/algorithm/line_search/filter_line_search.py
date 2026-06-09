@@ -43,6 +43,7 @@ class FilterLineSearch(LineSearch):
         # Allocate vectors that will be used internally
         self.trial = self.optimizer.create_opt_vector()
         self.trial_grad = self.problem.create_vector()
+        self.trial_res = self.problem.create_vector()
 
         # Allocate the internal filter
         self.filter = Filter()
@@ -68,12 +69,7 @@ class FilterLineSearch(LineSearch):
 
         # Reset depending on the barrier strategy used
         reset = False
-        if self.options["barrier_strategy"] == "monotone":
-            if barrier_info.new_barrier:
-                reset = True
-        elif barrier_info.mu_new < 0.1 * barrier_info.mu_old:
-            reset = True
-        elif self.options["barrier_strategy"] == "quality_function":
+        if barrier_info.new_barrier:
             reset = True
 
         if reset:
@@ -125,13 +121,14 @@ class FilterLineSearch(LineSearch):
                 basval = np.log10(abs(base.ref_barr))
             if np.log10(max(trial_barr - base.ref_barr, 1e-300)) > obj_max_inc + basval:
                 return False
-        return (
-            trial_theta - (1.0 - gamma_theta) * base.ref_theta
-            <= self.EPS10 * abs(base.ref_theta)
-        ) or (
-            (trial_barr - base.ref_barr) - (-gamma_phi * base.ref_theta)
-            <= self.EPS10 * abs(base.ref_barr)
-        )
+
+        feas_reduce = trial_theta - (1.0 - gamma_theta) * base.ref_theta
+        feas_check = feas_reduce <= self.EPS10 * abs(base.ref_theta)
+
+        obj_reduce = (trial_barr - base.ref_barr) + gamma_phi * base.ref_theta
+        obj_check = obj_reduce <= self.EPS10 * abs(base.ref_barr)
+
+        return feas_check or obj_check
 
     def check_acceptance(self, base, trial_barr, trial_theta, alpha_test):
         if trial_theta > self.theta_max:
@@ -143,9 +140,11 @@ class FilterLineSearch(LineSearch):
         ):
             if not self.armijo_holds(base, trial_barr, alpha_test):
                 return False
-        else:
-            if not self.acceptable_to_iterate(base, trial_barr, trial_theta):
-                return False
+            else:
+                return True
+
+        if not self.acceptable_to_iterate(base, trial_barr, trial_theta):
+            return False
 
         return self.filter.is_acceptable(trial_barr, trial_theta)
 
@@ -161,13 +160,13 @@ class FilterLineSearch(LineSearch):
 
     def build_base_point(self, evaluator, state):
         base = self.FilterBasePoint()
-        fobj, barrier = evaluator.evaluate_objective_and_barrier_from_point(
-            state.mu, state.obj_scale, state.current
-        )
-        base.ref_barr = fobj + barrier
-        base.ref_theta = evaluator.evaluate_infeasibility_from_gradient(
-            state.current, state.gradient
-        )
+
+        # Evaluate the objective and infeasibility at this point
+        evaluator.evaluate_objective_and_infeasibility(state)
+        base.ref_barr = state.objective_value + state.log_barrier_value
+        base.ref_theta = state.con_infeasibility
+
+        # Evaluate the directional derivative
         base.ref_dphi = evaluator.evaluate_directional_derivative(state)
 
         return base
@@ -194,17 +193,6 @@ class FilterLineSearch(LineSearch):
         return alpha_min
 
     def line_search(self, solver, evaluator, state):
-
-        # Check if we should reset the filter
-        filter_reset_trigger = self.options["filter_reset_trigger"]
-        max_filter_resets = self.options["max_filter_resets"]
-        if (
-            self.successive_filter_rejections >= filter_reset_trigger
-            and self.filter_reset_count < max_filter_resets
-        ):
-            self.filter.clear()
-            state.filter_reset_count += 1
-
         # Build the base point for comparison. In case a watchdog is set, this
         # base point will come from the watchdog.
         base = self.build_base_point(evaluator, state)
@@ -219,6 +207,12 @@ class FilterLineSearch(LineSearch):
         # Initial step lengths
         alpha_primal = state.max_alpha_primal
         alpha_dual = state.max_alpha_dual
+
+        # Bound the difference in the step lengths
+        if alpha_primal < 0.1 * alpha_dual:
+            alpha_dual = alpha_primal
+        elif alpha_dual < 0.1 * alpha_primal:
+            alpha_primal = alpha_dual
 
         # Max line search iterations
         max_line_iters = self.options["max_line_search_iterations"]
@@ -240,27 +234,38 @@ class FilterLineSearch(LineSearch):
                 state.obj_scale, self.trial, self.trial_grad
             )
 
-            # Get the objective and log-barrier term
-            fobj, barrier = evaluator.evaluate_objective_and_barrier_from_point(
-                state.mu, state.obj_scale, self.trial
+            # Get the objective, log-barrier term and infeasibility
+            fobj, barrier, infeas = (
+                evaluator.evaluate_objective_and_infeasibility_from_point(
+                    state.mu, state.obj_scale, self.trial, self.trial_grad
+                )
             )
             trial_barr = fobj + barrier
-
-            # Compute the l1 norm of the constraint violation
-            trial_theta = evaluator.evaluate_infeasibility_from_gradient(
-                self.trial, self.trial_grad
-            )
+            trial_theta = infeas
 
             accepted = self.check_acceptance(
                 base, trial_barr, trial_theta, alpha_primal
             )
 
+            # The first point was not accepted, so increment the filter rejection counter
+            if line_iter == 0 and not accepted:
+                self.successive_filter_rejections += 1
+            elif line_iter == 0 and accepted:
+                self.successive_filter_rejections = 0
+
             if accepted or alpha_primal <= alpha_min:
                 self.update_filter(base, trial_barr, trial_theta, alpha_primal)
 
                 # Update the state information: Invalidate the current point, but copy
-                # over the gradient that we just computed at the trial point
+                # over the objective and gradient that we just computed at the trial point
                 state.invalidate()
+
+                # Set the objective, log barrier and infeasibility values
+                state.objective_value = fobj
+                state.log_barrier_value = barrier
+                state.con_infeasibility = infeas
+                state.objective_current = True
+
                 state.current.copy(self.trial)
                 state.gradient.copy(self.trial_grad)
                 state.gradient_current = True
@@ -274,10 +279,32 @@ class FilterLineSearch(LineSearch):
                 # Retain a copy of the line search info for logging iterations
                 self.current_info = info
 
+                # Check if we should reset the filter
+                filter_reset_trigger = self.options["filter_reset_trigger"]
+                max_filter_resets = self.options["max_filter_resets"]
+                if (
+                    self.successive_filter_rejections >= filter_reset_trigger
+                    and self.filter_reset_count < max_filter_resets
+                ):
+                    self.filter.clear()
+                    self.filter_reset_count += 1
+
                 return info
 
             backtrack_factor = self.options["backtracking_factor"]
-            alpha_primal = max(backtrack_factor * alpha_primal, alpha_min)
+
+            # TODO: Make this an option. This keeps the primal
+            # and dual steps linked.
+            alpha_new = backtrack_factor * alpha_primal
+            if alpha_new > alpha_min:
+                alpha_primal = alpha_new
+                alpha_dual = backtrack_factor * alpha_dual
+            else:
+                tau = alpha_primal / alpha_min
+                alpha_primal = alpha_min
+                alpha_dual = tau * alpha_dual
+
+            # alpha_primal = max(backtrack_factor * alpha_primal, alpha_min)
 
         return info
 

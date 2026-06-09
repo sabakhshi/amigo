@@ -117,6 +117,11 @@ class CudaCSRMatBackend {
     }
   }
 
+  void copy_device_data(const T* d_src_data) {
+    AMIGO_CHECK_CUDA(cudaMemcpy(d_data, d_src_data, nnz * sizeof(T),
+                                cudaMemcpyDeviceToDevice));
+  }
+
  private:
   int nrows, num_local_rows;  // Number of rows and number of local rows
   int ncols;                  // Number of columns

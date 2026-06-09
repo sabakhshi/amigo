@@ -1,5 +1,3 @@
-from amigo import MemoryLocation
-
 from . import LinearSolver
 
 # TODO: Current GPU solver path (CSRMatFactorCuda):
@@ -18,22 +16,31 @@ from . import LinearSolver
 
 
 class DirectCudaSolver(LinearSolver):
-    def __init__(self, problem, pivot_eps=1e-12):
-        self.problem = problem
-
+    def __init__(self, options, state):
         try:
             from amigo.amigo import CSRMatFactorCuda
         except:
             raise NotImplementedError("Amigo compiled without CUDA support")
 
-        loc = MemoryLocation.DEVICE_ONLY
-        self.hess = self.problem.create_matrix(loc)
-        self.solver = CSRMatFactorCuda(self.hess, pivot_eps)
+        pivot_eps = 1e-6
+        self.mat_copy = state.hessian.duplicate()
 
-    def factor(self, alpha, x, diag):
-        self.problem.hessian(alpha, x, self.hess)
-        self.problem.add_diagonal(diag, self.hess)
+        # Create the solver
+        self.solver = CSRMatFactorCuda(self.mat_copy, pivot_eps)
+
+    def factor(self, hessian, diagonal):
+        self.mat_copy.copy(hessian)
+        self.mat_copy.add_diagonal(diagonal)
         self.solver.factor()
 
     def solve(self, bx, px):
         self.solver.solve(bx, px)
+
+    def inertia_enabled(self):
+        return True
+
+    def get_inertia(self):
+        return self.solver.get_inertia()
+
+    def set_pivot_tolerance(self, pivtol):
+        pass

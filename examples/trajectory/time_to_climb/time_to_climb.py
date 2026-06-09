@@ -246,6 +246,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--build", dest="build", action="store_true", default=False, help="Enable building"
 )
+parser.add_argument(
+    "--solver",
+    dest="solver",
+    choices=["amigo", "mumps", "cuda"],
+    default="amigo",
+    help="Solver type",
+)
 args = parser.parse_args()
 
 # Set the scaling
@@ -356,6 +363,7 @@ x = model.create_vector()
 opt = am.Optimizer(model, x)
 data = opt.optimize(
     {
+        "solver": args.solver,
         "initial_barrier_param": 1.0,
         "monotone_barrier_fraction": 0.25,
         "barrier_strategy": "monotone",
@@ -369,6 +377,9 @@ data = opt.optimize(
 # Save optimization data
 with open("time_to_climb_opt_data.json", "w") as fp:
     json.dump(data, fp, indent=2)
+
+# Copy the solution back to the host
+x.copy_device_to_host()
 
 # Extract results
 tf_opt = x["obj.tf"][0]  # Extract scalar from array

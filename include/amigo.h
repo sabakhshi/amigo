@@ -35,6 +35,8 @@ inline bool check_consistent_policy_and_location(ExecPolicy policy,
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+#include <cstdio>
+
 #ifndef AMIGO_CHECK_CUDA
 #define AMIGO_CHECK_CUDA(call)                                           \
   do {                                                                   \

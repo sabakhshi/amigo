@@ -76,7 +76,7 @@ class Optimizer:
         else:
             self.x = self.problem.create_vector()
 
-        self.x.copy(self.problem.get_initial_point())
+        self.x_init = self.problem.get_initial_point()
         self.lower = self.problem.get_lower()
         self.upper = self.problem.get_upper()
 
@@ -97,14 +97,13 @@ class Optimizer:
         """Create the C++ InteriorPointOptimizer backend and slack mapping."""
         data_vec = self.problem.get_data_vector()
         self.x.copy_host_to_device()
+        self.x_init.copy_host_to_device()
         self.lower.copy_host_to_device()
         self.upper.copy_host_to_device()
         data_vec.copy_host_to_device()
 
         self.optimizer = InteriorPointOptimizer(self.problem)
-        self.vars = self.optimizer.create_opt_vector(self.x)
-        self.update = self.optimizer.create_opt_vector()
-        self.temp = self.optimizer.create_opt_vector()
+        return
 
     def get_options(self, options={}):
         return get_default_options(options)
@@ -130,7 +129,7 @@ class Optimizer:
         # Check and normalize the options dictionary for internal use
         options = self.get_options(options=options)
 
-        # TODO: Where should this go?
+        # TODO: Where should this go? It should only be called one time.
         # self.optimizer.relax_bounds(1e-8, options["constr_viol_tol"])
 
         # Continuation control object, if any
@@ -170,8 +169,7 @@ class Optimizer:
         logger = OptimizationLogger(objs, options, self.problem, self.optimizer)
 
         # Set the initial point
-        self.x.copy(self.problem.get_initial_point())
-        print(self.x.get_array())
+        self.x.copy(self.x_init)
 
         # Initialize the dual and slack variable values. This utilizes the solver object
         # to find initial values of the dual variables.
@@ -194,7 +192,7 @@ class Optimizer:
             self.state.iter = counter
 
             # Evaluate the objective and barrier function
-            self.evaluator.evaluate_objective_and_barrier(self.state)
+            self.evaluator.evaluate_objective_and_infeasibility(self.state)
 
             # Evaluate the residuals for the convergence check
             self.evaluator.evaluate_residual(self.state)

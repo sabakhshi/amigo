@@ -2,6 +2,7 @@ import numpy as np
 import os
 import ast
 import sys
+import sysconfig
 import importlib
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ from .amigo import (
     CSRMat,
     ExternalComponentGroup,
     SlackComponent,
+    MemoryLocation,
 )
 from .cmake_helper import get_cmake_dir
 from .component import Component
@@ -1056,9 +1058,9 @@ class Model:
         """Create a new data vector"""
         return ModelVector(self, self.problem.create_data_vector(), kind="data")
 
-    def create_matrix(self):
+    def create_matrix(self, loc=MemoryLocation.HOST_AND_DEVICE):
         """Create a new Hessian matrix"""
-        return self.problem.create_matrix()
+        return self.problem.create_matrix(loc)
 
     def eval_gradient(self, x: ModelVector, g: ModelVector, alpha: float = 1.0):
         """Evaluate the gradient of the model"""
@@ -1279,6 +1281,9 @@ amigo_add_python_module(
         # Locate the installed Amigo CMake package inside the Python package
         amigo_cmake_dir = get_cmake_dir()
 
+        # Python include directory
+        python_include_dir = sysconfig.get_path("include")
+
         # Cmake command
         cmake_cmd = [
             "cmake",
@@ -1288,6 +1293,7 @@ amigo_add_python_module(
             str(build_dir),
             f"-DCMAKE_PREFIX_PATH={amigo_cmake_dir}",
             f"-DPython3_EXECUTABLE={sys.executable}",
+            f"-DPython3_INCLUDE_DIR={python_include_dir}",
             f"-Dpybind11_DIR={cmake_pybind11_dir}",
             f"-DCMAKE_BUILD_TYPE={build_type}",
         ]

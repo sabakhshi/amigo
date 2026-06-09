@@ -52,10 +52,15 @@ class CudssFactorBackend {
     d_start_rowp = nullptr, d_end_rowp = nullptr;
 
 #ifdef AMIGO_CUDSS_USE_CLASSIC_CSR
+    // AMIGO_CHECK_CUDSS(cudssMatrixCreateCsr(
+    //     &A, (int64_t)n, (int64_t)n, (int64_t)nnz, d_rowp, nullptr, d_cols,
+    //     d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_GENERAL,
+    //     CUDSS_MVIEW_FULL, CUDSS_BASE_ZERO));
+
     AMIGO_CHECK_CUDSS(cudssMatrixCreateCsr(
         &A, (int64_t)n, (int64_t)n, (int64_t)nnz, d_rowp, nullptr, d_cols,
-        d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_GENERAL, CUDSS_MVIEW_FULL,
-        CUDSS_BASE_ZERO));
+        d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_SYMMETRIC,
+        CUDSS_MVIEW_LOWER, CUDSS_BASE_ZERO));
 #else
     AMIGO_CHECK_CUDA(cudaMalloc(&d_start_rowp, n * sizeof(int)));
     AMIGO_CHECK_CUDA(cudaMalloc(&d_end_rowp, n * sizeof(int)));
@@ -64,10 +69,15 @@ class CudssFactorBackend {
     AMIGO_CHECK_CUDA(cudaMemcpy(d_end_rowp, d_rowp + 1, n * sizeof(int),
                                 cudaMemcpyDeviceToDevice));
 
+    // AMIGO_CHECK_CUDSS(cudssMatrixCreateCsr(
+    //     &A, (int64_t)n, (int64_t)n, (int64_t)nnz, d_rowp, nullptr, d_cols,
+    //     d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_GENERAL,
+    //     CUDSS_MVIEW_FULL, CUDSS_BASE_ZERO));
+
     AMIGO_CHECK_CUDSS(cudssMatrixCreateCsr(
         &A, (int64_t)n, (int64_t)n, (int64_t)nnz, d_rowp, nullptr, d_cols,
-        d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_GENERAL, CUDSS_MVIEW_FULL,
-        CUDSS_BASE_ZERO));
+        d_data, CUDA_R_32I, CUDA_R_64F, CUDSS_MTYPE_SYMMETRIC,
+        CUDSS_MVIEW_LOWER, CUDSS_BASE_ZERO));
 #endif  // AMIGO_CUDSS_USE_CLASSIC_CSR
 
     // Create the configuration settings
@@ -134,6 +144,21 @@ class CudssFactorBackend {
 
     AMIGO_CHECK_CUDA(
         cudaMemcpy(d_x, d_X, n * sizeof(double), cudaMemcpyDeviceToDevice));
+#endif
+  }
+
+  void get_inertia(int* num_pos, int* num_neg) {
+    *num_pos = 0;
+    *num_neg = 0;
+#ifdef AMIGO_USE_CUDSS
+    int inertia[2] = {0, 0};
+    size_t size_written = 0;
+
+    AMIGO_CHECK_CUDSS(cudssDataGet(handle, data, CUDSS_DATA_INERTIA, inertia,
+                                   sizeof(inertia), &size_written));
+
+    *num_pos = inertia[0];
+    *num_neg = inertia[1];
 #endif
   }
 
@@ -207,6 +232,11 @@ class CuSolverFactorBackend {
                                              reorder, d_x, &singularity));
   }
 
+  void get_inertia(int* pos, int* neg) {
+    *pos = 0;
+    *neg = 0;
+  }
+
  private:
   std::shared_ptr<CSRMat<double>> mat;
 
@@ -235,6 +265,10 @@ void CSRMatFactorCuda::factor() { obj->factor(); }
 void CSRMatFactorCuda::solve(std::shared_ptr<Vector<double>> b,
                              std::shared_ptr<Vector<double>> x) {
   obj->solve(b, x);
+}
+
+void CSRMatFactorCuda::get_inertia(int* pos, int* neg) {
+  obj->get_inertia(pos, neg);
 }
 
 }  // namespace amigo

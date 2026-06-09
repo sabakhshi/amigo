@@ -92,7 +92,7 @@ parser.add_argument(
 parser.add_argument(
     "--solver",
     dest="solver",
-    choices=["cholesky", "cholesky_left", "ldl", "scipy"],
+    choices=["cholesky", "cholesky_left", "ldl", "scipy", "cuda"],
     default="cholesky",
 )
 args = parser.parse_args()
@@ -159,6 +159,10 @@ x = model.create_vector()
 g = model.create_vector()
 mat = model.create_matrix()
 
+# Copy the data over to the GPU
+data = model.get_data_vector()
+data.copy_host_to_device()
+
 print("Evaluating the Hessian...")
 model.eval_gradient(x, g)
 model.eval_hessian(x, mat)
@@ -166,49 +170,74 @@ model.eval_hessian(x, mat)
 # Solve the equations
 print("Solving...")
 
-if args.solver == "cholesky" or args.solver == "ldl":
-    stype = am.SolverType.CHOLESKY
-    if args.solver == "ldl":
-        stype = am.SolverType.LDL
+if args.solver == "cuda":
+    from amigo.amigo import CSRMatFactorCuda
 
-    ldl = am.SparseLDL(mat, stype, ustab=0.05)
-    flag = ldl.factor()
+    # Duplicate the matrix
+    mat_copy = mat.duplicate()
+    mat_copy.copy(mat)
+
+    pivot_eps = 1e-12
+    solver = CSRMatFactorCuda(mat_copy, pivot_eps)
+    solver.factor()
 
     start_time = time.perf_counter()
     for i in range(10):
+        mat_copy.copy(mat)
+        solver.factor()
+    end_time = time.perf_counter()
+    tfactor = (end_time - start_time) / 10
+
+    solver.solve(g.get_vector(), x.get_vector())
+
+    x.copy_device_to_host()
+else:
+    g.copy_device_to_host()
+    mat.copy_data_device_to_host()
+
+    if args.solver == "cholesky" or args.solver == "ldl":
+        stype = am.SolverType.CHOLESKY
+        if args.solver == "ldl":
+            stype = am.SolverType.LDL
+
+        ldl = am.SparseLDL(mat, stype, ustab=0.05)
         flag = ldl.factor()
-    end_time = time.perf_counter()
-    if flag != 0:
-        print(f"LDL factor flag {flag}")
 
-    x[:] = g[:]
-    ldl.solve(x.get_vector())
-    if stype == am.SolverType.LDL:
-        print("Inertia: ", ldl.get_inertia())
+        start_time = time.perf_counter()
+        for i in range(10):
+            flag = ldl.factor()
+        end_time = time.perf_counter()
+        if flag != 0:
+            print(f"LDL factor flag {flag}")
 
-    tfactor = (end_time - start_time) / 10
-elif args.solver == "cholesky_left":
-    chol = am.SparseCholesky(mat)
-    start_time = time.perf_counter()
-    for i in range(10):
-        flag = chol.factor()
-    end_time = time.perf_counter()
-    if flag != 0:
-        print(f"Cholesky factor flag {flag}")
+        x[:] = g[:]
+        ldl.solve(x.get_vector())
+        if stype == am.SolverType.LDL:
+            print("Inertia: ", ldl.get_inertia())
 
-    x[:] = g[:]
-    chol.solve(x.get_vector())
+        tfactor = (end_time - start_time) / 10
+    elif args.solver == "cholesky_left":
+        chol = am.SparseCholesky(mat)
+        start_time = time.perf_counter()
+        for i in range(10):
+            flag = chol.factor()
+        end_time = time.perf_counter()
+        if flag != 0:
+            print(f"Cholesky factor flag {flag}")
 
-    tfactor = (end_time - start_time) / 10
-elif args.solver == "scipy":
-    csr = am.tocsr(mat)
+        x[:] = g[:]
+        chol.solve(x.get_vector())
 
-    # This isn't a completely fair comparison
-    start_time = time.perf_counter()
-    x[:] = spsolve(csr, g[:])
-    end_time = time.perf_counter()
+        tfactor = (end_time - start_time) / 10
+    elif args.solver == "scipy":
+        csr = am.tocsr(mat)
 
-    tfactor = end_time - start_time
+        # This isn't a completely fair comparison
+        start_time = time.perf_counter()
+        x[:] = spsolve(csr, g[:])
+        end_time = time.perf_counter()
+
+        tfactor = end_time - start_time
 
 print(f"Factor time... {tfactor:.6f} seconds")
 
@@ -221,4 +250,5 @@ fig, ax = plt.subplots(1, 3, figsize=(8, 3))
 for index, soln in enumerate([w, tx, ty]):
     mesh.plot(soln, ax=ax[index])
 
+plt.savefig("plate_solution.png")
 plt.show()

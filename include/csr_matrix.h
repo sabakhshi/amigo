@@ -39,6 +39,7 @@ class SerialCSRMatBackend {
       *data = nullptr;
     }
   }
+  void copy_device_data(const T* d_src_data) {}
 };
 
 #ifdef AMIGO_USE_CUDA
@@ -192,6 +193,20 @@ class CSRMat {
     return std::make_shared<CSRMat<T>>(nrows, ncols, nnz, dup_rowp, dup_cols,
                                        mem_loc, row_owners, col_owners,
                                        sqdef_index);
+  }
+
+  /**
+   * @brief Copy the values from the source matrix to this one
+   *
+   * @param src The matrix source to copy from
+   */
+  void copy(std::shared_ptr<CSRMat<T>> src) {
+    if (data && src->data) {
+      std::copy(src->data, src->data + nnz, data);
+    }
+    T* d_data;
+    src->backend.get_device_data(nullptr, nullptr, &d_data);
+    backend.copy_device_data(d_data);
   }
 
   /**

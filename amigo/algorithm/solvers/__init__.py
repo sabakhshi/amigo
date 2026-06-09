@@ -1,14 +1,16 @@
 from .inertia_correction import InertiaCorrector
 from .linear_solver import LinearSolver
 
-# from .cuda_solver import DirectCudaSolver
-# from .lnks_solver import LNKSInexactSolver
+from .cuda_solver import DirectCudaSolver
 from .mumps_solver import MumpsSolver
+from .amigo_solver import AmigoSolver
 
+# from .lnks_solver import LNKSInexactSolver
 # from .pardiso_solver import PardisoSolver
 # from .petsc_solver import DirectPetscSolver
 # from .scipy_solver import DirectScipySolver
-from .amigo_solver import AmigoSolver
+
+import warnings
 
 
 def make_solver(options, state):
@@ -18,7 +20,19 @@ def make_solver(options, state):
     elif options["solver"] == "amigo":
         return AmigoSolver(options, state)
     elif options["solver"] == "mumps":
-        return MumpsSolver(options, state)
+        try:
+            return MumpsSolver(options, state)
+        except:
+            warnings.warn("Exception on MUMPS import, reverting to AmigoSolver")
+            return AmigoSolver(options, state)
+    elif options["solver"] == "cuda":
+        try:
+            return DirectCudaSolver(options, state)
+        except:
+            warnings.warn(
+                "Exception on DirectCudaSolver import, reverting to AmigoSolver"
+            )
+            return AmigoSolver(options, state)
     else:
         solver = options["solver"]
         raise ValueError(f"Unrecognized solver {solver}")

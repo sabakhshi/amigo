@@ -201,6 +201,13 @@ parser.add_argument(
     default=False,
     help="Show the sparsity pattern",
 )
+parser.add_argument(
+    "--solver",
+    dest="solver",
+    choices=["amigo", "mumps", "cuda"],
+    default="amigo",
+    help="Solver type",
+)
 args = parser.parse_args()
 
 model = create_brachistochrone_model()
@@ -240,6 +247,7 @@ x["obj.tf"] = 3.0
 opt = am.Optimizer(model, x)
 data = opt.optimize(
     {
+        "solver": args.solver,
         "max_iterations": 500,
         "initial_barrier_param": 1.0,
         "max_line_search_iterations": 5,

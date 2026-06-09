@@ -39,6 +39,7 @@ from __future__ import annotations
 import numpy as np
 from collections import defaultdict
 from typing import TYPE_CHECKING
+from .amigo import OptVarType
 
 if TYPE_CHECKING:  # avoid circular import at runtime
     from .model import Model, ModelVector
@@ -178,9 +179,9 @@ class Diagnostics:
         self.model.eval_gradient(x, g, alpha=0.0)
         g_arr = np.asarray(g[:], dtype=float)
 
-        mult_mask = np.asarray(
-            self.model.problem.get_multiplier_indicator(), dtype=bool
-        )
+        var_types = self.model.problem.get_var_types().get_array()
+        bits = int(OptVarType.DUAL_INEQUALITY) | int(OptVarType.DUAL_EQUALITY)
+        mult_mask = (var_types & bits) != 0
         c_flat = g_arr[mult_mask]
 
         result = {}

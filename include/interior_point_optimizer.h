@@ -26,23 +26,17 @@ class OptVector {
     // Create the slack and dual variable vectors for the upper and lower bounds
     MemoryLocation loc = x->get_memory_location();
 
-    sl = std::make_shared<Vector<T>>(num_primals, 0, loc);
-    su = std::make_shared<Vector<T>>(num_primals, 0, loc);
     zl = std::make_shared<Vector<T>>(num_primals, 0, loc);
     zu = std::make_shared<Vector<T>>(num_primals, 0, loc);
   }
 
   void zero() {
-    sl->zero();
-    su->zero();
     zl->zero();
     zu->zero();
   }
 
   void copy(std::shared_ptr<OptVector<T>> src) {
     x->copy(src->x);
-    sl->copy(src->sl);
-    su->copy(src->su);
     zl->copy(src->zl);
     zu->copy(src->zu);
   }
@@ -53,8 +47,6 @@ class OptVector {
   std::shared_ptr<Vector<T>> get_solution() { return x; }
   std::shared_ptr<Vector<T>> get_zl() { return zl; }
   std::shared_ptr<Vector<T>> get_zu() { return zu; }
-  std::shared_ptr<Vector<T>> get_sl() { return sl; }
-  std::shared_ptr<Vector<T>> get_su() { return su; }
 
   const std::shared_ptr<Vector<T>> get_solution() const { return x; }
 
@@ -78,25 +70,6 @@ class OptVector {
   }
 
   template <ExecPolicy policy>
-  void get_bound_slacks(T** sl_, T** su_) {
-    if (sl_) {
-      *sl_ = sl->template get_array<policy>();
-    }
-    if (su_) {
-      *su_ = su->template get_array<policy>();
-    }
-  }
-  template <ExecPolicy policy>
-  void get_bound_slacks(const T** sl_, const T** su_) const {
-    if (sl_) {
-      *sl_ = sl->template get_array<policy>();
-    }
-    if (su_) {
-      *su_ = su->template get_array<policy>();
-    }
-  }
-
-  template <ExecPolicy policy>
   T* get_solution_array() {
     return x->template get_array<policy>();
   }
@@ -111,8 +84,7 @@ class OptVector {
   // The primal/dual vector
   std::shared_ptr<Vector<T>> x;
 
-  // Duals and primals associated with the lower/upper bounds
-  std::shared_ptr<Vector<T>> sl, su;
+  // Duals associated with the lower/upper bounds
   std::shared_ptr<Vector<T>> zl, zu;
 };
 
@@ -157,6 +129,7 @@ class InteriorPointOptimizer {
     lbx->copy_host_to_device();
     ubx->copy_host_to_device();
 
+    // Set the constraint bounds
     lbh = std::make_shared<Vector<T>>(num_constraints, 0, loc);
     for (int i = 0; i < num_constraints; i++) {
       int idx = (*constraint_indices)[i];
@@ -219,20 +192,24 @@ class InteriorPointOptimizer {
    *
    * @param vars All of the optimization variables
    */
-  void initialize_duals_and_slacks(T mu,
-                                   std::shared_ptr<OptVector<T>> vars) const {
+  void initialize_duals(T mu, std::shared_ptr<OptVector<T>> vars) const {
     // Project all primals into strict interior of bounds (Section 3.6),
     // then initialize bound duals and slacks from the projected values.
     T* xlam = vars->template get_solution_array<policy>();
-    detail::project_primals_into_interior(info, xlam);
-
     T *zl, *zu;
     vars->template get_bound_duals<policy>(&zl, &zu);
-    detail::initialize_bound_duals(mu, info, xlam, zl, zu);
 
-    T *sl, *su;
-    vars->template get_bound_slacks<policy>(&sl, &su);
-    detail::initialize_slacks(info, xlam, sl, su);
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::project_primals_into_interior(info, xlam);
+      detail::initialize_bound_duals(mu, info, xlam, zl, zu);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::project_primals_into_interior_cuda(info, xlam);
+      detail::initialize_bound_duals_cuda(mu, info, xlam, zl, zu);
+    }
+#endif
   }
 
   /**
@@ -275,18 +252,6 @@ class InteriorPointOptimizer {
     return std::sqrt(total);
   }
 
-  void compute_residual_and_infeasibility(
-      T mu, const std::shared_ptr<OptVector<T>> vars,
-      const std::shared_ptr<Vector<T>> grad, std::shared_ptr<Vector<T>> res,
-      T& dsq, T& psq) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    res->zero();
-    detail::compute_residual_and_infeasibility(
-        mu, info, s, grad->template get_array<policy>(),
-        res->template get_array<policy>(), dsq, psq);
-  }
-
   /**
    * @brief Compute the diagonal contribution to the KKT matrix
    *
@@ -313,126 +278,179 @@ class InteriorPointOptimizer {
 #endif
   }
 
-  // Copy augmented solution into update, then back-substitute for bound
-  // duals.
+  /**
+   * @brief Compute the step in the primal, dual and bound dual variables based
+   * on the computed primal dual step. This is equvalent to a block
+   * back-substitution for the KKT system.
+   *
+   * @param mu The barrier parameter
+   * @param vars The values of the optimization variables
+   * @param px The primal dual update
+   * @param update The full primal/dual step
+   */
   void compute_update(T mu, const std::shared_ptr<OptVector<T>> vars,
                       const std::shared_ptr<Vector<T>> px,
-                      std::shared_ptr<OptVector<T>> upd) const {
-    detail::OptState<const T> s =
+                      std::shared_ptr<OptVector<T>> update) const {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
-    upd->get_solution()->copy(px);
+    std::shared_ptr<Vector<T>> px_update = update->get_solution();
+    if (px_update != px) {
+      px_update->copy(px);
+    }
+
+    // Set the updates for the dual variables
     T *dzl, *dzu;
-    upd->template get_bound_duals<policy>(&dzl, &dzu);
-    detail::compute_bound_dual_step(mu, info, s,
-                                    px->template get_array<policy>(), dzl, dzu);
+    update->template get_bound_duals<policy>(&dzl, &dzu);
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_bound_dual_step(
+          mu, info, current, px->template get_array<policy>(), dzl, dzu);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_bound_dual_step_cuda(
+          mu, info, current, px->template get_array<policy>(), dzl, dzu);
+    }
+#endif
   }
 
+  /**
+   * @brief Compute the max primal/dual step lengths based on the
+   * fraction-to-the-boundary rule.
+   *
+   * @param tau The fraction to the boundary
+   * @param vars The values of the optimization variables
+   * @param update The full step (often the result of compute_update)
+   * @param ax The max primal step
+   * @param xi The index of the constraining variable
+   * @param az The max dual step
+   * @param zi The index of the constraining dual variable
+   */
   void compute_max_step(T tau, const std::shared_ptr<OptVector<T>> vars,
-                        const std::shared_ptr<OptVector<T>> upd, T& ax, int& xi,
-                        T& az, int& zi) const {
-    detail::OptState<const T> s =
+                        const std::shared_ptr<OptVector<T>> update, T& ax,
+                        int& xi, T& az, int& zi) const {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
+    detail::OptState<const T> step =
+        detail::OptState<const T>::template make<policy>(update);
+
     const T *dzl, *dzu;
-    upd->template get_bound_duals<policy>(&dzl, &dzu);
-    detail::compute_max_step(tau, info, s,
-                             upd->template get_solution_array<policy>(), dzl,
-                             dzu, ax, xi, az, zi);
+    update->template get_bound_duals<policy>(&dzl, &dzu);
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_max_step(tau, info, current, step, ax, xi, az, zi);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_max_step_cuda(tau, info, current, step, ax, xi, az, zi);
+    }
+#endif
   }
 
+  /**
+   * @brief Apply the primal dual step to the variables
+   *
+   * @param ax The max primal step
+   * @param az The max dual step
+   * @param vars The values of the optimization variables
+   * @param update The full step
+   * @param result The variables at the full step
+   */
   void apply_step_update(T ax, T az, const std::shared_ptr<OptVector<T>> vars,
-                         const std::shared_ptr<OptVector<T>> upd,
-                         std::shared_ptr<OptVector<T>> tmp) const {
-    detail::OptState<const T> s =
+                         const std::shared_ptr<OptVector<T>> update,
+                         std::shared_ptr<OptVector<T>> result) const {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
-    const T* dxlam = upd->template get_solution_array<policy>();
-    const T *dzl, *dzu;
-    upd->template get_bound_duals<policy>(&dzl, &dzu);
-    T* xlam_n = tmp->template get_solution_array<policy>();
-    T *zl_n, *zu_n;
-    tmp->template get_bound_duals<policy>(&zl_n, &zu_n);
-    T *sl_n, *su_n;
-    tmp->template get_bound_slacks<policy>(&sl_n, &su_n);
-    int n = info.num_primals + info.num_constraints;
-    detail::apply_step(ax, az, info, s, dxlam, dzl, dzu, xlam_n, n, zl_n, zu_n,
-                       sl_n, su_n);
+    detail::OptState<const T> step =
+        detail::OptState<const T>::template make<policy>(update);
+    detail::OptState<T> result_state =
+        detail::OptState<T>::template make<policy>(result);
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::apply_step(ax, az, info, current, step, result_state);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::apply_step_cuda(ax, az, info, current, step, result_state);
+    }
+#endif
   }
 
-  // Python: avg_comp, xi = optimizer.compute_complementarity(vars)
+  /**
+   * @brief Compute the average complementarity and the xi parameter from LOQO
+   *
+   * @param vars The values of the optimization variables
+   * @param avg The average complementarity
+   * @param xi The parameter xi
+   */
   void compute_complementarity(const std::shared_ptr<OptVector<T>> vars, T& avg,
                                T& xi) const {
     detail::OptState<const T> s =
         detail::OptState<const T>::template make<policy>(vars);
     T ps[2] = {0, 0};
     T lm = std::numeric_limits<T>::max();
-    detail::compute_complementarity(info, s, ps, lm);
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_complementarity(info, s, ps, lm);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_complementarity_cuda(info, s, ps, lm);
+    }
+#endif
+
     T gps[2];
     T gm;
     MPI_Allreduce(ps, gps, 2, get_mpi_type<T>(), MPI_SUM, comm);
     MPI_Allreduce(&lm, &gm, 1, get_mpi_type<T>(), MPI_MIN, comm);
-    avg = (gps[1] > 0) ? gps[0] / gps[1] : 0.0;
-    xi = (avg > 0) ? A2D::max2(T(0), A2D::min2(T(1), gm / avg)) : T(1);
+
+    // Compute the average complementarity
+    avg = 0.0;
+    if (gps[1] > 0.0) {
+      avg = gps[0] / gps[1];
+    }
+
+    // Compute the xi vactor
+    xi = 1.0;
+    if (avg > 0.0) {
+      xi = A2D::max2(0.0, A2D::min2(T(1.0), gm / avg));
+    }
   }
 
-  // Python: scalar = optimizer.compute_complementarity_sq(vars)
-  void compute_complementarity_sq(const std::shared_ptr<OptVector<T>> vars,
-                                  T& sq) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    T local = 0;
-    detail::compute_complementarity_sq(info, s, T(0), local);
-    MPI_Allreduce(&local, &sq, 1, get_mpi_type<T>(), MPI_SUM, comm);
-  }
-
-  // Python: dev = optimizer.compute_max_comp_deviation(vars, mu)
-  void compute_max_comp_deviation(const std::shared_ptr<OptVector<T>> vars,
-                                  T mu, T& md) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    T local;
-    detail::compute_max_comp_deviation(info, s, mu, local);
-    MPI_Allreduce(&local, &md, 1, get_mpi_type<T>(), MPI_MAX, comm);
-  }
-
-  // Python: d_sq, p_sq, c_sq = optimizer.compute_kkt_error(vars, grad)
-  void compute_kkt_error(const std::shared_ptr<OptVector<T>> vars,
-                         const std::shared_ptr<Vector<T>> grad, T& d_sq,
-                         T& p_sq, T& c_sq) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    T ld = 0, lp = 0, lc = 0;
-    detail::compute_kkt_error_sq(info, s, grad->template get_array<policy>(),
-                                 ld, lp, lc);
-    T lv[3] = {ld, lp, lc}, gv[3];
-    MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_SUM, comm);
-    d_sq = gv[0];
-    p_sq = gv[1];
-    c_sq = gv[2];
-  }
-
-  // Python: theta = optimizer.compute_constraint_violation_1norm(vars, grad)
-  // Constraint violation 1-norm for filter line search.
-  T compute_constraint_violation_1norm(
-      const std::shared_ptr<OptVector<T>> vars,
-      const std::shared_ptr<Vector<T>> grad) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    T local = detail::compute_constraint_violation_1norm(
-        info, s, grad->template get_array<policy>());
-    T result;
-    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
-    return result;
-  }
-
-  // Python: d_inf, p_inf, c_inf = optimizer.compute_kkt_error_mu(mu, vars,
-  // grad) Eq. 5: infinity-norm KKT error with barrier complementarity.
-  void compute_kkt_error_mu(T mu, const std::shared_ptr<OptVector<T>> vars,
-                            const std::shared_ptr<Vector<T>> grad, T& d_inf,
-                            T& p_inf, T& c_inf) const {
+  /**
+   * @brief Compute the KKT errors for the dual, primal and complementarity
+   * equations in the infinity norm
+   *
+   * @param mu The barrier parameter
+   * @param vars The values of the optimization variables
+   * @param grad The gradient
+   * @param d_inf The output dual error
+   * @param p_inf The output primal error
+   * @param c_inf The output complementarity error
+   */
+  void compute_kkt_error(T mu, const std::shared_ptr<OptVector<T>> vars,
+                         const std::shared_ptr<Vector<T>> grad, T& d_inf,
+                         T& p_inf, T& c_inf) const {
     detail::OptState<const T> s =
         detail::OptState<const T>::template make<policy>(vars);
     T ld = 0, lp = 0, lc = 0;
-    detail::compute_kkt_error(mu, info, s, grad->template get_array<policy>(),
-                              ld, lp, lc);
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_kkt_error(mu, info, s, grad->template get_array<policy>(),
+                                ld, lp, lc);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_kkt_error_cuda(
+          mu, info, s, grad->template get_array<policy>(), ld, lp, lc);
+    }
+#endif
+
     T lv[3] = {ld, lp, lc}, gv[3];
     MPI_Allreduce(lv, gv, 3, get_mpi_type<T>(), MPI_MAX, comm);
     d_inf = gv[0];
@@ -440,81 +458,156 @@ class InteriorPointOptimizer {
     c_inf = gv[2];
   }
 
-  // Python: dphi = optimizer.compute_barrier_dphi(mu, vars, update, res, px,
-  // diag) KKT residual form (used by QF oracle for quality function
-  // evaluation).
-  T compute_barrier_dphi(T mu, const std::shared_ptr<OptVector<T>> vars,
-                         const std::shared_ptr<OptVector<T>> update,
-                         const std::shared_ptr<Vector<T>> res,
-                         const std::shared_ptr<Vector<T>> px,
-                         const std::shared_ptr<Vector<T>> diag) const {
-    detail::OptState<const T> s =
+  /**
+   * @brief Compute the log-barrier term
+   *
+   * Returns the value of
+   *
+   * - mu * log(x - lb) - mu * log(ub - x)
+   *
+   * @param mu The barrier parameter
+   * @param vars The values of the optimization variables
+   * @return The value of the log-barrier term
+   */
+  T compute_log_barrier(T mu, const std::shared_ptr<OptVector<T>> vars) const {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
-    T local = detail::compute_barrier_dphi_from_kkt(
-        info, s, res->template get_array<policy>(),
-        px->template get_array<policy>(), diag->template get_array<policy>());
+    T local = 0.0;
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      local = detail::compute_log_barrier(mu, info, current);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      local = detail::compute_log_barrier_cuda(mu, info, current);
+    }
+#endif
+
     T result;
     MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
-  // Python: dphi = optimizer.compute_barrier_dphi_direct(mu, vars, grad, px)
-  // Direct form: grad_barrier^T * dx = sum(grad_f*dx - mu*dx/sl + mu*dx/su)
-  // Direct barrier directional derivative for the filter line search.
-  T compute_barrier_dphi_direct(T mu, const std::shared_ptr<OptVector<T>> vars,
-                                const std::shared_ptr<Vector<T>> grad,
-                                const std::shared_ptr<Vector<T>> px) const {
-    detail::OptState<const T> s =
+  /**
+   * @brief Compute the directional derivative of the log-barrier term
+   *
+   * Returns the value of
+   *
+   * - mu * e^{T} * (X - LB)^{-1} * px + mu * e^{T} * (UB - X)^{-1} * px
+   *
+   * @param mu The barrier parameter
+   * @param vars The values of the optimization variables
+   * @param update The update for the optimization variables
+   * @return The value of the directional derivative of the log-barrier term
+   */
+  T compute_log_barrier_derivative(
+      T mu, const std::shared_ptr<OptVector<T>> vars,
+      const std::shared_ptr<OptVector<T>> update) const {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
-    T local = detail::compute_barrier_dphi(mu, info, s,
-                                           grad->template get_array<policy>(),
-                                           px->template get_array<policy>());
+    detail::OptState<const T> step =
+        detail::OptState<const T>::template make<policy>(update);
+
+    T local = 0.0;
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      local = detail::compute_log_barrier_derivative(mu, info, current, step);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      local =
+          detail::compute_log_barrier_derivative_cuda(mu, info, current, step);
+    }
+#endif
+
     T result;
     MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
-  T compute_barrier_log_sum(T mu,
-                            const std::shared_ptr<OptVector<T>> vars) const {
-    detail::OptState<const T> s =
+  /**
+   * @brief Compute the squared sum of the complementarity
+   *
+   * @param mu The barrier parameter
+   * @param vars The values of the optimization variables
+   */
+  T compute_sum_squared_complementarity(
+      T mu, const std::shared_ptr<OptVector<T>> vars) {
+    detail::OptState<const T> current =
         detail::OptState<const T>::template make<policy>(vars);
-    T local = detail::compute_barrier_log_sum(mu, info, s);
+    T local = 0.0;
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      local = detail::compute_sum_squared_complementarity(mu, info, current);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      local =
+          detail::compute_sum_squared_complementarity_cuda(mu, info, current);
+    }
+#endif
+
     T result;
     MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
     return result;
   }
 
-  // Python: optimizer.reset_bound_multipliers(mu, kappa, vars) -- in-place
-  void reset_bound_multipliers(T mu, T kappa,
-                               std::shared_ptr<OptVector<T>> vars) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    T *zl, *zu;
-    vars->template get_bound_duals<policy>(&zl, &zu);
-    detail::reset_bound_multipliers(mu, kappa, info, s, zl, zu);
+  /**
+   * @brief Compute the infeasibility in the l1 norm based on the gradient
+   *
+   * @param gradient The gradient at a point
+   */
+  T compute_infeasibility(const std::shared_ptr<Vector<T>> gradient) {
+    const T* grad = gradient->template get_array<policy>();
+    T local = 0.0;
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      local = detail::compute_infeasibility(info, grad);
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      local = detail::compute_infeasibility_cuda(info, grad);
+    }
+#endif
+
+    T result;
+    MPI_Allreduce(&local, &result, 1, get_mpi_type<T>(), MPI_SUM, comm);
+    return result;
   }
 
-  void compute_affine_start_point(T bm,
-                                  const std::shared_ptr<OptVector<T>> vars,
-                                  const std::shared_ptr<OptVector<T>> upd,
-                                  std::shared_ptr<OptVector<T>> dst) const {
+  /**
+   * @brief Compute the dual residual = grad(f) - zl + zu
+   *
+   * This is used to find a least-squares estiamte of the initial multipliers
+   *
+   * @param vars The values of the optimization variables
+   * @param gradient The gradient at a point
+   * @param out The result = grad(f) - zl + zu
+   */
+  void compute_dual_residual(const std::shared_ptr<OptVector<T>> vars,
+                             const std::shared_ptr<Vector<T>> grad,
+                             std::shared_ptr<Vector<T>> out) const {
     detail::OptState<const T> s =
         detail::OptState<const T>::template make<policy>(vars);
-    const T *dzl, *dzu;
-    upd->template get_bound_duals<policy>(&dzl, &dzu);
-    T *zl_o, *zu_o;
-    dst->template get_bound_duals<policy>(&zl_o, &zu_o);
-    detail::compute_affine_start_point(bm, info, s, dzl, dzu, zl_o, zu_o);
-  }
 
-  void compute_dual_residual_vector(const std::shared_ptr<OptVector<T>> vars,
-                                    const std::shared_ptr<Vector<T>> grad,
-                                    std::shared_ptr<Vector<T>> out) const {
-    detail::OptState<const T> s =
-        detail::OptState<const T>::template make<policy>(vars);
-    detail::compute_dual_residual_vector(
-        info, s, grad->template get_array<policy>(),
-        out->template get_array<policy>(), out->get_size());
+    out->zero();
+
+    if constexpr (policy == ExecPolicy::SERIAL ||
+                  policy == ExecPolicy::OPENMP) {
+      detail::compute_dual_residual(info, s, grad->template get_array<policy>(),
+                                    out->template get_array<policy>(),
+                                    out->get_size());
+    }
+#ifdef AMIGO_USE_CUDA
+    else {
+      detail::compute_dual_residual_cuda(
+          info, s, grad->template get_array<policy>(),
+          out->template get_array<policy>(), out->get_size());
+    }
+#endif
   }
 
   void get_kkt_element_counts(int& n_d, int& n_p, int& n_c) const {
@@ -527,183 +620,22 @@ class InteriorPointOptimizer {
     }
   }
 
-  // Debug: verify KKT system solve by forming full unreduced residual
-  void check_update(T mu, const std::shared_ptr<Vector<T>> grad,
-                    const std::shared_ptr<OptVector<T>> vars,
-                    const std::shared_ptr<OptVector<T>> update,
-                    const std::shared_ptr<CSRMat<T>> hess) const {
-    // TODO: implement debug verification for new 2x2 system
-  }
-
-  // Slack mapping
-  // Register which primals are slacks and which constraints they correspond
-  // to. After this call, initialize_slacks() becomes available.
-  //   slack_global:  global variable indices of slack variables
-  //   constr_global: global variable indices of the inequality constraints
-  // Both arrays must have the same length (n_slacks).
-  void set_slack_mapping(int n_slacks, const int* slack_global,
-                         const int* constr_global) {
-    auto ml = (policy == ExecPolicy::CUDA) ? MemoryLocation::HOST_AND_DEVICE
-                                           : MemoryLocation::HOST_ONLY;
-    n_slacks_ = n_slacks;
-    slack_global_ = std::make_shared<Vector<int>>(n_slacks, 0, ml);
-    constr_global_ = std::make_shared<Vector<int>>(n_slacks, 0, ml);
-    for (int k = 0; k < n_slacks; k++) {
-      (*slack_global_)[k] = slack_global[k];
-      (*constr_global_)[k] = constr_global[k];
-    }
-    slack_global_->copy_host_to_device();
-    constr_global_->copy_host_to_device();
-  }
-
-  // Initialize slacks to s = d(x).
-  //
-  // Each inequality is reformulated as c_k(x) - s_k = 0.  The gradient
-  // at constraint index ci holds the primal residual c_k(x) - s_k.
-  // Recovering the constraint body: d_k(x) = (c_k(x) - s_k) + s_k.
-  //
-  // Requires gradient to have been evaluated at the current (x, s).
-  // After this call, use initialize_multipliers_and_slacks() to push
-  // the new slacks into bounds and reset bound duals.
-  void initialize_slacks(const std::shared_ptr<Vector<T>> grad,
-                         std::shared_ptr<OptVector<T>> vars) const {
-    if (n_slacks_ == 0) return;
-    T* xlam = vars->template get_solution_array<policy>();
-    const T* g = grad->template get_array<policy>();
-    for (int k = 0; k < n_slacks_; k++) {
-      int si = (*slack_global_)[k];
-      int ci = (*constr_global_)[k];
-      T residual = g[ci];           // c_k(x) - s_k
-      T s_old = xlam[si];           // current slack
-      xlam[si] = residual + s_old;  // d_k(x) = c_k(x)
-    }
-  }
-
-  bool has_slacks() const { return n_slacks_ > 0; }
-  int get_num_slacks() const { return n_slacks_; }
-
-  // NLP scaling: gradient-based.  Computed once at the initial point.
-  // obj_scale_ scales the objective via alpha; constr_scale_ scales
-  // Jacobian rows via D*H*D and gradient post-processing.
-
-  /// Compute scaling factors from initial gradient and Jacobian row norms.
-  void compute_nlp_scaling(const std::shared_ptr<Vector<T>> x,
-                           const std::shared_ptr<Vector<T>> grad,
-                           T max_gradient = T(100), T min_value = T(1e-8)) {
-    const T* g = grad->template get_array<policy>();
-
-    // Objective: df = min(1, max_gradient / ||grad_f||_inf)
-    T obj_max = T(0);
-    for (int i = 0; i < num_primals; i++) {
-      T v = std::abs(g[(*primal_indices)[i]]);
-      if (v > obj_max) obj_max = v;
-    }
-    T global_obj_max;
-    MPI_Allreduce(&obj_max, &global_obj_max, 1, get_mpi_type<T>(), MPI_MAX,
-                  comm);
-
-    obj_scale_ =
-        (global_obj_max > max_gradient) ? max_gradient / global_obj_max : T(1);
-    if (obj_scale_ < min_value) obj_scale_ = min_value;
-
-    // Constraint: dc[j] = min(1, max_gradient / ||J_row_j||_inf)
-    // Assemble KKT at (x, lam=0) to read Jacobian rows.
-    auto hess = problem->create_matrix();
-    problem->hessian(T(1), x, hess);
-    hess->copy_data_device_to_host();
-
-    int nr, num_constraintsmat, nnz_mat;
-    const int *rp, *cl;
-    T* dt;
-    hess->get_data(&nr, &num_constraintsmat, &nnz_mat, &rp, &cl, &dt);
-
-    auto ml = (policy == ExecPolicy::CUDA) ? MemoryLocation::HOST_AND_DEVICE
-                                           : MemoryLocation::HOST_ONLY;
-    constr_scale_ = std::make_shared<Vector<T>>(num_constraints, 0, ml);
-
-    // Scan each constraint row for its inf-norm
-    for (int j = 0; j < num_constraints; j++) {
-      int row = (*constraint_indices)[j];
-      T row_max = T(0);
-      for (int k = rp[row]; k < rp[row + 1]; k++) {
-        T v = std::abs(dt[k]);
-        if (v > row_max) row_max = v;
-      }
-      T dc = (row_max > max_gradient) ? max_gradient / row_max : T(1);
-      if (dc < min_value) dc = min_value;
-      (*constr_scale_)[j] = dc;
-    }
-
-    // Scale constraint targets for consistency
-    for (int j = 0; j < num_constraints; j++) {
-      T dc = (*constr_scale_)[j];
-      if (dc != T(1)) (*lbh)[j] *= dc;
-    }
-    lbh->copy_host_to_device();
-    info.lbh = lbh->template get_array<policy>();
-
-    // Per-variable scaling: 1.0 for primals, dc[j] for constraints.
-    scale_vec_.resize(nr, T(1));
-    for (int j = 0; j < num_constraints; j++)
-      scale_vec_[(*constraint_indices)[j]] = (*constr_scale_)[j];
-
-    constr_scale_->copy_host_to_device();
-    scaling_active_ = true;
-  }
-
-  /// Scale constraint rows of the gradient in-place.
-  void apply_gradient_scaling(std::shared_ptr<Vector<T>> grad) const {
-    if (!scaling_active_) return;
-    T* g = grad->template get_array<policy>();
-    for (int j = 0; j < num_constraints; j++)
-      g[(*constraint_indices)[j]] *= (*constr_scale_)[j];
-  }
-
-  /// D*H*D similarity transform on the KKT matrix (scales Jacobian blocks).
-  void apply_hessian_scaling(std::shared_ptr<CSRMat<T>> hess) const {
-    if (!scaling_active_) return;
-    int nr, nc, nnz_mat;
-    const int *rp, *cl;
-    T* dt;
-    hess->get_data(&nr, &nc, &nnz_mat, &rp, &cl, &dt);
-    const T* sv = scale_vec_.data();
-    for (int i = 0; i < nr; i++) {
-      T di = sv[i];
-      for (int k = rp[i]; k < rp[i + 1]; k++) {
-        dt[k] *= di * sv[cl[k]];
-      }
-    }
-  }
-
-  /// Scale constraint multipliers into scaled space: y[j] *= dc[j].
-  void scale_multipliers(std::shared_ptr<Vector<T>> x) const {
-    if (!scaling_active_) return;
-    T* xlam = x->template get_array<policy>();
-    for (int j = 0; j < num_constraints; j++)
-      xlam[(*constraint_indices)[j]] *= (*constr_scale_)[j];
-  }
-
-  /// Unscale constraint multipliers: y[j] /= dc[j].
-  void unscale_multipliers(std::shared_ptr<Vector<T>> x) const {
-    if (!scaling_active_) return;
-    T* xlam = x->template get_array<policy>();
-    for (int j = 0; j < num_constraints; j++)
-      xlam[(*constraint_indices)[j]] /= (*constr_scale_)[j];
-  }
-
-  T get_obj_scale() const { return obj_scale_; }
-  bool has_scaling() const { return scaling_active_; }
-
   std::shared_ptr<Vector<T>> get_lbx() const { return lbx; }
   std::shared_ptr<Vector<T>> get_ubx() const { return ubx; }
 
   // Return relaxed bounds if available, otherwise original bounds.
   // These are the bounds actually used by the IPM backend (info.lbx/ubx).
   std::shared_ptr<Vector<T>> get_lbx_relaxed() const {
-    return lbx_relaxed ? lbx_relaxed : lbx;
+    if (lbx_relaxed) {
+      return lbx_relaxed;
+    }
+    return lbx;
   }
   std::shared_ptr<Vector<T>> get_ubx_relaxed() const {
-    return ubx_relaxed ? ubx_relaxed : ubx;
+    if (ubx_relaxed) {
+      return ubx_relaxed;
+    }
+    return ubx;
   }
 
   // Relax bounds by bound_relax_factor (default 1e-8).
@@ -741,17 +673,6 @@ class InteriorPointOptimizer {
   // Number of global constraints
   int num_global_primals;
   int num_global_constraints;
-
-  // Slack-to-constraint mapping (set via set_slack_mapping)
-  int n_slacks_ = 0;
-  std::shared_ptr<Vector<int>> slack_global_;
-  std::shared_ptr<Vector<int>> constr_global_;
-
-  // NLP scaling state
-  T obj_scale_ = T(1);
-  std::shared_ptr<Vector<T>> constr_scale_;
-  std::vector<T> scale_vec_;  // per-variable: 1.0 primals, dc[j] constraints
-  bool scaling_active_ = false;
 };
 
 }  // namespace amigo

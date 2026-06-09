@@ -2,6 +2,7 @@ import amigo as am
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import niceplots
 
 """
@@ -307,6 +308,10 @@ def plot_results(t, q, u):
     axes[2, 2].tick_params(labelsize=10)
     axes[2, 2].set_title("Thruster 2", fontsize=14, fontweight="bold", pad=10)
 
+    available_fonts = {f.name for f in font_manager.fontManager.ttflist}
+    if not fontname in available_fonts:
+        fontname = "DejaVu Sans"
+
     # Set font for all axes
     for ax_row in axes:
         for ax in ax_row:
@@ -390,6 +395,13 @@ parser.add_argument(
     default=False,
     help="Build the C++ module",
 )
+parser.add_argument(
+    "--solver",
+    dest="solver",
+    choices=["amigo", "mumps", "cuda"],
+    default="amigo",
+    help="Solver type",
+)
 args = parser.parse_args()
 
 model = create_freeflyingrobot_model()
@@ -397,7 +409,7 @@ model = create_freeflyingrobot_model()
 if args.build:
     model.build_module()
 
-model.initialize(order_type=am.OrderingType.NESTED_DISSECTION)
+model.initialize()
 
 print(f"Number of variables:     {model.num_variables}")
 print(f"Number of constraints:   {model.num_constraints}")
@@ -444,6 +456,7 @@ x["robot.u[:, 3]"] = 0.4 * switch  # u4
 opt = am.Optimizer(model, x)
 opt_data = opt.optimize(
     {
+        "solver": args.solver,
         "barrier_strategy": "monotone",
         "initial_barrier_param": 10.0,
         "monotone_barrier_fraction": 0.1,
@@ -459,6 +472,9 @@ opt_data = opt.optimize(
         "fraction_to_boundary": 0.99,
     }
 )
+
+x = opt.get_optimized_point()
+x.copy_device_to_host()
 
 print(f"\nConverged: {opt_data.get('converged', False)}")
 print(f"Final residual: {opt_data['iterations'][-1]['residual']:.2e}")

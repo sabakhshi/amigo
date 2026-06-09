@@ -345,6 +345,13 @@ parser.add_argument(
     default=False,
     help="Show the sparsity pattern",
 )
+parser.add_argument(
+    "--solver",
+    dest="solver",
+    choices=["amigo", "mumps", "cuda"],
+    default="amigo",
+    help="Solver type",
+)
 args = parser.parse_args()
 
 model = create_cannon_model()
@@ -394,7 +401,11 @@ x["cannon.q[:,3]"] = vy0
 opt = am.Optimizer(model)
 
 # Record intermediate trajectories
-opt_options = {"max_iterations": 100, "record_components": ["cannon.q"]}
+opt_options = {
+    "solver": args.solver,
+    "max_iterations": 100,
+    "record_components": ["cannon.q"],
+}
 data = opt.optimize(opt_options)
 
 # Save optimization data
