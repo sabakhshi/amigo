@@ -41,11 +41,11 @@ pip install -e . -v \
     -Ccmake.args="-DCMAKE_CUDA_ARCHITECTURES=native"
 ```
 
-Note that you cannot enable both CUDA and OpenMP at the same time. 
+CUDA and OpenMP can be enabled at the same time. All component computations will utilize the GPU and the native Amigo solver will use OpenMP.
 
 Amigo model modules inherit the build options that are selected during the install phase.
 
-Installing Metis is recommended. Metis can be enabled through the command line via
+Installing Metis is recommended for good performance. Metis can be enabled through the command line via
 
 ```
 pip install -e . -v \
