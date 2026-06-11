@@ -304,10 +304,10 @@ py::array_t<int> reorder_model(amigo::OrderingType order_type,
 }
 
 namespace detail {
-#ifdef AMIGO_USE_OPENMP
-inline constexpr amigo::ExecPolicy policy = amigo::ExecPolicy::OPENMP;
-#elif defined(AMIGO_USE_CUDA)
+#ifdef AMIGO_USE_CUDA
 inline constexpr amigo::ExecPolicy policy = amigo::ExecPolicy::CUDA;
+#elif defined(AMIGO_USE_OPENMP)
+inline constexpr amigo::ExecPolicy policy = amigo::ExecPolicy::OPENMP;
 #else
 inline constexpr amigo::ExecPolicy policy = amigo::ExecPolicy::SERIAL;
 #endif
