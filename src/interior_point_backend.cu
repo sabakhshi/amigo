@@ -862,9 +862,7 @@ AMIGO_KERNEL void compute_sum_squared_complementarity_kernel(
       local += r * r;
     }
     if (!::isinf(info.ubx[i])) {
-      // NOTE: matches the serial version, which uses (x - lbx) for the
-      // upper-bound term as well.
-      T gap = x - info.lbx[i];
+      T gap = info.ubx[i] - x;
       T r = gap * current.zu[i] - mu;
       local += r * r;
     }

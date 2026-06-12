@@ -221,7 +221,7 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
 
         kmu = self.options["mu_linear_decrease_factor"]
         tmu = self.options["mu_superlinear_decrease_power"]
-        mu_new = min(kmu * state.mu, tmu * state.mu)
+        mu_new = min(kmu * state.mu, state.mu**tmu)
         floor = min(self.tol, self.compl_inf_tol) / (btf + 1.0)
         mu_new = max(mu_new, floor, self.mu_min)
         mu_new = min(mu_new, self.mu_max)
@@ -582,8 +582,9 @@ class QualityFunctionBarrierStrategy(BarrierStrategy):
         self.optimizer.apply_step_update(
             alpha_x, alpha_z, state.current, state.step, self.temp
         )
+        # Eq. 4.2: complementarity term uses the plain products, no mu target
         trial_comp_sq = self.optimizer.compute_sum_squared_complementarity(
-            mu_s, self.temp
+            0.0, self.temp
         )
 
         qf = (
