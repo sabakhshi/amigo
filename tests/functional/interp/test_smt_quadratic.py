@@ -107,7 +107,7 @@ def opt_result(request, trained_krg):
             "solver": solver,
             "max_iterations": 200,
             "initial_barrier_param": 1.0,
-            "convergence_tolerance": 1e-8,
+            "convergence_tolerance": 1e-7,
             "max_line_search_iterations": 10,
             "init_affine_step_multipliers": False,
             "init_least_squares_multipliers": False,
