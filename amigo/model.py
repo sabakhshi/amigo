@@ -1062,13 +1062,25 @@ class Model:
         """Create a new Hessian matrix"""
         return self.problem.create_matrix(loc)
 
-    def eval_gradient(self, x: ModelVector, g: ModelVector, alpha: float = 1.0):
+    def eval_gradient(
+        self,
+        x: ModelVector,
+        g: ModelVector,
+        alpha: float = 1.0,
+        zero_fixed_rows: bool = True,
+    ):
         """Evaluate the gradient of the model"""
-        self.problem.gradient(alpha, x.get_vector(), g.get_vector())
+        self.problem.gradient(alpha, x.get_vector(), g.get_vector(), zero_fixed_rows)
 
-    def eval_hessian(self, x: ModelVector, mat: CSRMat, alpha: float = 1.0):
+    def eval_hessian(
+        self,
+        x: ModelVector,
+        mat: CSRMat,
+        alpha: float = 1.0,
+        zero_fixed_rows_and_columns: bool = True,
+    ):
         """Evaluate the Hessian of the model"""
-        self.problem.hessian(alpha, x.get_vector(), mat)
+        self.problem.hessian(alpha, x.get_vector(), mat, zero_fixed_rows_and_columns)
 
     def compute_output(self, x: ModelVector, output: ModelVector):
         """Compute the output of the model usually after optimization"""
