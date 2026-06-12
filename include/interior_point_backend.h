@@ -447,7 +447,7 @@ T compute_sum_squared_complementarity(T mu, const OptProblemInfo<T>& info,
       result += r * r;
     }
     if (!std::isinf(info.ubx[i])) {
-      T gap = x - info.lbx[i];
+      T gap = info.ubx[i] - x;
       T r = gap * current.zu[i] - mu;
       result += r * r;
     }
