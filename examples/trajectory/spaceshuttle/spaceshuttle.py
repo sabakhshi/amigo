@@ -3,20 +3,22 @@ import numpy as np
 import argparse
 import json
 import math
-import matplotlib.pylab as plt
-import niceplots
 
 # Problem parameters
 num_time_steps = 300
+time_scale = 1000.0  # final time scaled to O(1) for conditioning
 
 """
 Space Shuttle Re-entry Trajectory (Maximum Cross-Range)
 ======================================================
-This example reproduces the optimal-control problem described in
-Betts, *Practical Methods for Optimal Control and Estimation Using Non-linear Programming*,
-Example 8.1. The goal is to maximise the final latitude (cross-range) of a shuttle-like
-vehicle subject to six-DoF point-mass dynamics with lift/drag and optional
-heat-rate limits.
+Reproduces Betts, *Practical Methods for Optimal Control and Estimation
+Using Non-linear Programming*, Example 6.1. A shuttle-like vehicle
+maximizes its final latitude (cross-range) under six-DoF point-mass
+dynamics with lift/drag, a free final time, and an optional aerodynamic
+heat-rate limit. Both cases are solved in one run:
+
+    Case 1: no heating limit 
+    Case 2: qU = 70 limit    
 
 State vector (English units, radians):
     h      altitude            [ft]
@@ -28,8 +30,7 @@ State vector (English units, radians):
 
 Control vector:
     alpha  angle of attack     [rad]
-    beta   bank angle          [rad] 
-
+    beta   bank angle          [rad]
 """
 
 # Constants List:
@@ -62,7 +63,7 @@ class TrapezoidRule(am.Component):
     def __init__(self):
         super().__init__()
 
-        self.add_constant("tf_fixed", value=2000.0)  # Fixed final time
+        self.add_input("tf", lower=0.1, upper=am.inf)  # Free final time (scaled)
         self.add_input("q1")
         self.add_input("q2")
         self.add_input("q1dot")
@@ -73,13 +74,13 @@ class TrapezoidRule(am.Component):
         return
 
     def compute(self):
-        tf = self.constants["tf_fixed"]
+        tf = self.inputs["tf"]
         q1 = self.inputs["q1"]
         q2 = self.inputs["q2"]
         q1dot = self.inputs["q1dot"]
         q2dot = self.inputs["q2dot"]
 
-        dt = tf / num_time_steps  # Fixed time step
+        dt = tf * time_scale / num_time_steps  # Variable step (scaled final time)
         self.constraints["res"] = q2 - q1 - 0.5 * dt * (q1dot + q2dot)
 
         return
@@ -95,16 +96,18 @@ class ShuttleDynamics(am.Component):
         for k, v in aero_const.items():
             self.add_constant(k, value=v)
         self.add_constant("mass", value=203000 / 32.174)
-        self.add_constant("qU", value=70.0)  # heating rate limit
 
-        # Set the lower and upper bounds for angle of attack and bank angle
+        # Heating-rate limit (set at runtime so both Betts cases share one build)
+        self.add_data("qU", value=70.0)
+
+        # Control bounds (Betts Example 6.1)
         u_min = [
-            np.radians(-20.0) / self.scaling["alpha"],
-            np.radians(-90.0) / self.scaling["beta"],
+            np.radians(-90.0) / self.scaling["alpha"],
+            np.radians(-89.0) / self.scaling["beta"],
         ]
         u_max = [
-            np.radians(40.0) / self.scaling["alpha"],
-            np.radians(90.0) / self.scaling["beta"],
+            np.radians(90.0) / self.scaling["alpha"],
+            np.radians(1.0) / self.scaling["beta"],
         ]
 
         # Add Inputs
@@ -137,7 +140,7 @@ class ShuttleDynamics(am.Component):
         c1 = self.constants["c1"]
         c2 = self.constants["c2"]
         c3 = self.constants["c3"]
-        qU = self.constants["qU"]
+        qU = self.data["qU"]
 
         # Get inputs
         q = self.inputs["q"]
@@ -167,20 +170,19 @@ class ShuttleDynamics(am.Component):
         # Aerodynamic Forces:
         q_dyn = 0.5 * rho * v**2
         L = q_dyn * S * CL
-        D = q_dyn * S * CD  # fixed typo
+        D = q_dyn * S * CD
 
         # Other calculations to complete the dynamics
         r = Re + h
         g = mu / r**2
 
-        # Heating rate calculation
-        # q_alpha = c0 + c1 * conv * alpha + c2 * conv * alpha**2 + c3 * conv * alpha**3
+        # Heating rate
         alpha_deg = conv * alpha
         q_alpha = c0 + alpha_deg * (c1 + alpha_deg * (c2 + alpha_deg * c3))
         q_r = 17700 * am.sqrt(rho) * (0.0001 * v) ** 3.07
         q_heat = q_r * q_alpha
 
-        # Equations of motion (scaled residuals):
+        # Equations of motion (scaled residuals, Betts eq. 6.1-6.6):
         res = [None] * 6
         res[0] = qdot[0] - (v * am.sin(gamma)) / self.scaling["altitude"]
         res[1] = (
@@ -201,7 +203,10 @@ class ShuttleDynamics(am.Component):
             qdot[5]
             - (
                 (L * am.sin(beta)) / (mass * v * am.cos(gamma))
-                + (v / r * am.cos(theta)) * am.cos(gamma) * am.sin(psi) * am.sin(theta)
+                + (v / (r * am.cos(theta)))
+                * am.cos(gamma)
+                * am.sin(psi)
+                * am.sin(theta)
             )
             / self.scaling["psi"]
         )
@@ -217,7 +222,7 @@ class ShuttleDynamics(am.Component):
 class Objective(am.Component):
     def __init__(self):
         super().__init__()
-        self.add_constant("tf_fixed", value=2000.0)  # Fixed final time
+        self.add_input("tf", lower=0.1, upper=am.inf)  # Free final time (scaled, owner)
         self.add_input("theta", label="final latitude")
         self.add_objective("obj")
 
@@ -240,7 +245,7 @@ class InitialConditions(am.Component):
     def compute(self):
         q = self.inputs["q"]
 
-        # Initial Conditions (from Betts Example 8.1) - scaled
+        # Initial conditions (Betts Example 6.1) - scaled
         self.constraints["res"] = [
             q[0] - 260000.0 / self.scaling["altitude"],
             q[1] - 0.0 / self.scaling["longitude"],
@@ -260,6 +265,7 @@ class FinalConditions(am.Component):
 
     def compute(self):
         q = self.inputs["q"]
+        # Terminal area energy management (TAEM) interface
         self.constraints["res"] = [
             q[0] - 80000.0 / self.scaling["altitude"],
             q[3] - 2500.0 / self.scaling["velocity"],
@@ -328,40 +334,35 @@ model.link(f"dyn.q[{num_time_steps}, :]", "fc.q[0, :]")
 # Link objective - final latitude (theta at final time)
 model.link(f"dyn.q[{num_time_steps}, 2]", "obj.theta[0]")
 
-# Set initial guess for design variables (scaled)
-# initial guess for final latitude
-model.set_meta("value", "obj.theta[0]", 30.0 / scaling["latitude"])
+# Link the free final time to every trapezoid component
+model.link("obj.tf[0]", "trap.tf[:]")
 
-# Set initial guess for states
+# Initial guess for design variables (scaled)
+model.set_meta("value", "obj.theta[0]", 30.0 / scaling["latitude"])
+model.set_meta("value", "obj.tf[0]", 2000.0 / time_scale)
+
+# Boundary values for the linear state guess
 h0, phi0, theta0 = 260000.0, 0.0, 0.0
 v0, gamma0, psi0 = 25600.0, math.radians(-1.0), math.radians(90.0)
-
-# Final conditions
 hf, vf, gamma_f = 80000.0, 2500.0, math.radians(-5.0)
 
 N = num_time_steps + 1
-
 t_norm = np.linspace(0, 1, N)
 
-# Scale the initial guess values
+# Linear initial guess for the states
 model.set_meta("value", "dyn.q[:,0]", (h0 + (hf - h0) * t_norm) / scaling["altitude"])
-model.set_meta("value", "dyn.q[:,1]", phi0 / scaling["longitude"])  # phi (constant)
-model.set_meta(
-    "value", "dyn.q[:,2]", theta0 / scaling["latitude"]
-)  # theta (start at zero)
+model.set_meta("value", "dyn.q[:,1]", phi0 / scaling["longitude"])
+model.set_meta("value", "dyn.q[:,2]", theta0 / scaling["latitude"])
 model.set_meta("value", "dyn.q[:,3]", (v0 + (vf - v0) * t_norm) / scaling["velocity"])
 model.set_meta(
     "value", "dyn.q[:,4]", (gamma0 + (gamma_f - gamma0) * t_norm) / scaling["gamma"]
-)  # gamma
-model.set_meta("value", "dyn.q[:,5]", psi0 / scaling["psi"])  # psi (constant)
+)
+model.set_meta("value", "dyn.q[:,5]", psi0 / scaling["psi"])
 
-# Controls:
-# alpha
+# Initial guess for the controls (negative bank to build cross-range)
 alpha_profile = 20.0 * np.exp(-2 * t_norm) + 5.0
 model.set_meta("value", "dyn.u[:,0]", np.radians(alpha_profile) / scaling["alpha"])
-
-# Bank angle profile for cross-range:
-beta_profile = 30.0 * np.sin(np.pi * t_norm)
+beta_profile = -50.0 * np.sin(np.pi * t_norm)
 model.set_meta("value", "dyn.u[:,1]", np.radians(beta_profile) / scaling["beta"])
 
 # Build the module if requested
@@ -370,74 +371,67 @@ if args.build:
 
 # Initialize the model
 model.initialize()
-
 data = model.get_data_vector()
 
 print(f"Num variables:              {model.num_variables}")
 print(f"Num constraints:            {model.num_constraints}")
 
-# Create the design vector
-x = model.create_vector()
+opt_options = {
+    "solver": args.solver,
+    "initial_barrier_param": 0.1,
+    "max_iterations": 500,
+    "fraction_to_boundary": 0.995,
+    "init_least_squares_multipliers": True,
+}
 
-# Create optimizer and solve
-opt = am.Optimizer(model, x)
-data = opt.optimize(
-    {
-        "solver": args.solver,
-        "initial_barrier_param": 0.1,
-        "max_iterations": 500,
-        "fraction_to_boundary": 0.995,
-        "init_least_squares_multipliers": True,
-    }
-)
+# Solve both Betts cases: no heating limit and the qU = 70 limit. qU is a
+# runtime value, so a single build serves both.
+cases = [
+    ("no_heat", "No heating limit", 1.0e6),
+    ("heat", "Heating limit qU = 70", 70.0),
+]
 
-# Save optimization data
-with open("spaceshuttle_opt_data.json", "w") as fp:
-    json.dump(data, fp, indent=2)
+for tag, label, qU_value in cases:
+    # Set the heating-rate limit for this case (no rebuild needed)
+    for i in range(num_time_steps + 1):
+        data[f"dyn.qU[{i}]"] = qU_value
+    data.get_vector().copy_host_to_device()
 
-# Extract results (unscaled)
-tf_opt = 2000.0  # Fixed final time
-q_scaled = x["dyn.q"]
-u_scaled = x["dyn.u"]
-t = np.linspace(0, tf_opt, num_time_steps + 1)
+    print("\n" + "=" * 60)
+    print(f"  {label}")
+    print("=" * 60)
 
-# Unscale the state and control variables for output
-q = np.zeros_like(q_scaled)
-q[:, 0] = q_scaled[:, 0] * scaling["altitude"]  # altitude
-q[:, 1] = q_scaled[:, 1] * scaling["longitude"]  # longitude
-q[:, 2] = q_scaled[:, 2] * scaling["latitude"]  # latitude
-q[:, 3] = q_scaled[:, 3] * scaling["velocity"]  # velocity
-q[:, 4] = q_scaled[:, 4] * scaling["gamma"]  # flight path angle
-q[:, 5] = q_scaled[:, 5] * scaling["psi"]  # heading
+    x = model.create_vector()
+    opt = am.Optimizer(model, x)
+    opt_data = opt.optimize(opt_options)
 
-u = np.zeros_like(u_scaled)
-u[:, 0] = u_scaled[:, 0] * scaling["alpha"]  # angle of attack
-u[:, 1] = u_scaled[:, 1] * scaling["beta"]  # bank angle
+    # Extract results (unscaled)
+    tf_opt = float(x["obj.tf"][0]) * time_scale
+    q_scaled = x["dyn.q"]
+    u_scaled = x["dyn.u"]
+    t = np.linspace(0, tf_opt, num_time_steps + 1)
 
-# Print barrier parameter evolution
-print("\nBarrier parameter evolution (heuristic method):")
-print("Iteration | Barrier Param | Residual")
-print("-" * 40)
-for i, iter_data in enumerate(data["iterations"]):
-    if i < 20 or i % 10 == 0:  # Show first 20 iterations, then every 10th
-        print(
-            f"{i:8d} | {iter_data['barrier_param']:12.6e} | {iter_data['residual']:12.6e}"
+    q = np.zeros_like(q_scaled)
+    q[:, 0] = q_scaled[:, 0] * scaling["altitude"]  # altitude
+    q[:, 1] = q_scaled[:, 1] * scaling["longitude"]  # longitude
+    q[:, 2] = q_scaled[:, 2] * scaling["latitude"]  # latitude
+    q[:, 3] = q_scaled[:, 3] * scaling["velocity"]  # velocity
+    q[:, 4] = q_scaled[:, 4] * scaling["gamma"]  # flight path angle
+    q[:, 5] = q_scaled[:, 5] * scaling["psi"]  # heading
+
+    u = np.zeros_like(u_scaled)
+    u[:, 0] = u_scaled[:, 0] * scaling["alpha"]  # angle of attack
+    u[:, 1] = u_scaled[:, 1] * scaling["beta"]  # bank angle
+
+    # Save the trajectory for plotting (unscaled: ft, rad, ft/s)
+    with open(f"spaceshuttle_trajectory_{tag}.json", "w") as fp:
+        json.dump(
+            {"t": t.tolist(), "q": q.tolist(), "u": u.tolist(), "qU": qU_value}, fp
         )
-if len(data["iterations"]) > 20:
-    print(f"... (showing every 10th iteration after 20)")
-    print(
-        f"{len(data['iterations'])-1:8d} | {data['iterations'][-1]['barrier_param']:12.6e} | {data['iterations'][-1]['residual']:12.6e}"
-    )
 
-# Print results
-print(f"\nOptimization Results:")
-print(f"Optimal time:         {tf_opt:.1f} seconds")
-print(f"Final altitude:       {q[-1, 0]:.0f} ft")
-print(f"Final latitude:       {np.degrees(q[-1, 2]):.2f} degrees")
-print(f"Final velocity:       {q[-1, 3]:.0f} ft/s")
-print(f"Maximum cross-range:  {np.degrees(np.max(q[:, 2])):.2f} degrees")
-
-print(f"\nFinal conditions check:")
-print(f"h_final = {q[-1, 0]:.0f} ft (target: 80,000 ft)")
-print(f"v_final = {q[-1, 3]:.0f} ft/s (target: 2,500 ft/s)")
-print(f"gamma_final = {np.degrees(q[-1, 4]):.1f} deg (target: -5.0 deg)")
+    print(f"\nResults ({label}):")
+    print(f"Optimal final time:   {tf_opt:.2f} seconds")
+    print(f"Maximum cross-range:  {np.degrees(np.max(q[:, 2])):.4f} degrees")
+    print(f"Final altitude:       {q[-1, 0]:.0f} ft (target: 80,000)")
+    print(f"Final velocity:       {q[-1, 3]:.0f} ft/s (target: 2,500)")
+    print(f"Final flight path:    {np.degrees(q[-1, 4]):.2f} deg (target: -5.0)")
