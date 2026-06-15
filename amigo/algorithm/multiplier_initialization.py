@@ -20,6 +20,23 @@ class MultiplierInitializer:
             self.compute_least_squares_multipliers(evaluator, solver, state)
         return
 
+    def recompute_multipliers(self, evaluator, solver, state):
+        """Refresh the constraint multipliers once the iterate is nearly
+        feasible, which keeps the dual variables from diverging.
+
+        The multipliers are recomputed only when recompute_multipliers is
+        enabled, the least-squares estimate is in use, and the primal
+        infeasibility is below recompute_multiplier_tol; otherwise they are
+        left unchanged.
+        """
+        if (
+            self.options["recompute_multipliers"]
+            and self.options["init_least_squares_multipliers"]
+            and state.primal_infeas < self.options["recompute_multiplier_tol"]
+        ):
+            self.compute_least_squares_multipliers(evaluator, solver, state)
+        return
+
     def compute_least_squares_multipliers(self, evaluator, solver, state):
         """Set the constraint multipliers to their least-squares estimate.
 
