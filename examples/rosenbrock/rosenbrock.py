@@ -9,7 +9,7 @@ class Rosenbrock(am.Component):
         self.add_input("x1", value=-1.0, lower=-2.0, upper=2.0)
         self.add_input("x2", value=-1.0, lower=-2.0, upper=2.0)
         self.add_objective("obj")
-        self.add_constraint("con", value=0.0, lower=-float("inf"), upper=0.0)
+        self.add_constraint("con", value=0.0, lower=-am.inf, upper=0.0)
 
     def compute(self):
         x1 = self.inputs["x1"]

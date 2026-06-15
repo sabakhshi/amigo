@@ -4,9 +4,11 @@ _str_to_type = {"float": float, "int": int}
 
 
 def _normalize_shape(shape):
-    if shape is None:
+    if shape is None or shape == ():
         return None
     if isinstance(shape, int):
+        if shape == 1:
+            return None
         shape = (shape,)
     elif isinstance(shape, list):
         return tuple(shape)
@@ -15,6 +17,16 @@ def _normalize_shape(shape):
     if not (len(shape) == 1 or len(shape) == 2):
         raise ValueError("Amigo only accepts shapes with at most two dimensions")
     return shape
+
+
+def _broadcast_shape(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a == b:
+        return a
+    raise ValueError(f"Cannot broadcast shapes {a} and {b}")
 
 
 class ExprNode:
@@ -40,6 +52,7 @@ class ConstNode(ExprNode):
         self.name = name
         self.value = value
         self.type = type
+        self.shape = None
 
     def is_zero(self):
         if self.value is not None and (self.value == 0 or self.value == 0.0):
@@ -133,10 +146,33 @@ class PassiveNode(ExprNode):
 
 
 class UnaryNode(ExprNode):
+    unary_ops = [
+        "-",
+        "fabs",
+        "sqrt",
+        "sin",
+        "cos",
+        "tan",
+        "asin",
+        "acos",
+        "atan",
+        "exp",
+        "sinh",
+        "cosh",
+        "tanh",
+        "asinh",
+        "acosh",
+        "atanh",
+        "log",
+    ]
+
     def __init__(self, op, expr):
         super().__init__()
+        if not op in UnaryNode.unary_ops:
+            raise ValueError("Unrecognized unary operation f{}", op)
         self.op = op
         self.expr = expr
+        self.shape = expr.shape
 
     def is_zero(self):
         return self.expr.is_zero()
@@ -148,7 +184,8 @@ class UnaryNode(ExprNode):
         a = self.expr.to_cpp()
         if self.op == "-":
             return f"-({a})"
-        return f"A2D::{self.op}({a})"
+        else:
+            return f"A2D::{self.op}({a})"
 
     def is_active(self):
         return self.expr.is_active()
@@ -158,7 +195,7 @@ class UnaryNode(ExprNode):
 
         trig = ["sin", "cos", "tan", "asin", "acos", "atan"]
         exp = ["exp", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh"]
-        log = ["log", "log10"]
+        log = ["log"]
 
         if self.op == "-" or self.op == "fabs":
             cost += 1
@@ -175,11 +212,16 @@ class UnaryNode(ExprNode):
 
 
 class BinaryNode(ExprNode):
+    binary_ops = ["+", "-", "*", "/", "**", "pow", "atan2", "min2", "max2"]
+
     def __init__(self, op, left, right):
         super().__init__()
+        if not op in BinaryNode.binary_ops:
+            raise ValueError("Unrecognized unary operation f{}", op)
         self.op = op
         self.left = left
         self.right = right
+        self.shape = _broadcast_shape(left.shape, right.shape)
 
     def is_zero(self):
         return False
@@ -241,6 +283,13 @@ def _to_expr(val):
 class Expr:
     def __init__(self, node: ExprNode):
         self.node = node
+
+    @property
+    def shape(self):
+        return getattr(self.node, "shape", None)
+
+    def is_scalar(self):
+        return self.shape is None
 
     def __neg__(self):
         return Expr(UnaryNode("-", self))
