@@ -455,15 +455,16 @@ class ExprBuilder:
         self.counter = 0
         self.key_to_id = {}
         self.nodes = {}
+        self.expr_to_id = {}
 
         # Serialize the constants, data, inputs and vars
-        self.const_list = list(self._serialize_expr(c) for c in self.consts)
-        self.data_list = list(self._serialize_expr(d) for d in self.data)
-        self.input_list = list(self._serialize_expr(x) for x in self.inputs)
-        self.var_list = list(self._serialize_expr(v) for v in self.vars)
+        self.const_list = [self._serialize_expr(c) for c in self.consts]
+        self.data_list = [self._serialize_expr(d) for d in self.data]
+        self.input_list = [self._serialize_expr(x) for x in self.inputs]
+        self.var_list = [self._serialize_expr(v) for v in self.vars]
 
         # Serialize the expressions
-        self.rhs_list = list(self._serialize_expr(e) for e in self.rhs)
+        self.rhs_list = [self._serialize_expr(e) for e in self.rhs]
 
         self.counts = [0] * len(self.nodes)
         self.node_exprs = [None] * len(self.nodes)
@@ -524,12 +525,14 @@ class ExprBuilder:
         return
 
     def _serialize_expr(self, e: Expr):
-        key = e.serialize()
-        if key in self.key_to_id:
-            return self.key_to_id[key]
+        # Fast path: same Expr object already seen
+        eid = id(e)
+        if eid in self.expr_to_id:
+            return self.expr_to_id[eid]
 
         node = e.node
         if isinstance(node, ConstNode):
+            key = ("const", node.name, node.value, node.type)
             info = {
                 "type": "const",
                 "name": node.name,
@@ -537,6 +540,7 @@ class ExprBuilder:
                 "vartype": _type_to_str[node.type],
             }
         elif isinstance(node, VarNode):
+            key = ("var", node.name, node.shape, node.type, node.active)
             info = {
                 "type": "var",
                 "name": node.name,
@@ -545,36 +549,53 @@ class ExprBuilder:
                 "active": node.active,
             }
         elif isinstance(node, IndexNode):
+            expr_id = self._serialize_expr(node.expr)
+            key = ("index", expr_id, node.index)
             info = {
                 "type": "index",
-                "expr": self._serialize_expr(node.expr),
+                "expr": expr_id,
                 "index": node.index,
             }
         elif isinstance(node, PassiveNode):
+            expr_id = self._serialize_expr(node.expr)
+            key = ("passive", expr_id)
             info = {
                 "type": "passive",
-                "expr": self._serialize_expr(node.expr),
+                "expr": expr_id,
             }
         elif isinstance(node, UnaryNode):
+            expr_id = self._serialize_expr(node.expr)
+            key = ("unary", node.op, expr_id)
             info = {
                 "type": "unary",
                 "op": node.op,
-                "expr": self._serialize_expr(node.expr),
+                "expr": expr_id,
             }
         elif isinstance(node, BinaryNode):
+            left_id = self._serialize_expr(node.left)
+            right_id = self._serialize_expr(node.right)
+            key = ("binary", node.op, left_id, right_id)
             info = {
                 "type": "binary",
                 "op": node.op,
-                "left": self._serialize_expr(node.left),
-                "right": self._serialize_expr(node.right),
+                "left": left_id,
+                "right": right_id,
             }
         else:
             raise TypeError(type(node))
 
+        # Structural CSE: catches distinct Expr objects with identical structure
+        if key in self.key_to_id:
+            count = self.key_to_id[key]
+            self.expr_to_id[eid] = count
+            return count
+
         count = self.counter
-        self.key_to_id[key] = count
-        self.nodes[count] = info
         self.counter += 1
+
+        self.key_to_id[key] = count
+        self.expr_to_id[eid] = count
+        self.nodes[count] = info
 
         return count
 

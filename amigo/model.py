@@ -1755,7 +1755,7 @@ amigo_add_python_module(
             else:
                 fixed_vars.append(self.get_indices(expr)[indices])
         if fixed_vars:
-            fixed_vars = np.concatenate(fixed_vars)
+            fixed_vars = np.concatenate([np.atleast_1d(x) for x in fixed_vars])
             vtypes[fixed_vars] = OptVarType.FIXED
 
         # Create the optimization problem

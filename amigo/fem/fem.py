@@ -593,8 +593,10 @@ class Problem:
                         model.link(f"{comp_name}.{name}", f"outputs.{name}[0]")
 
         # Set the node locations directly
+        spatial_names = ["x", "y", "z"][: self.mesh.X.shape[1]]
         for k, name in enumerate(self.geo_space.get_names("H1")):
-            model.set_data(f"geo.{name}", self.mesh.X[:, k])
+            if name in spatial_names:
+                model.set_data(f"geo.{name}", self.mesh.X[:, k])
 
         # Link the output to the finite element class
         return model
